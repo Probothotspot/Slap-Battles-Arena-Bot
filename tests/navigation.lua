@@ -33,13 +33,14 @@ local function rig()
         IsA = function(_,class) return class=="BasePart" end }
     local lobby = { FindFirstChild = function(_,name) if name=="Teleport1" then return r.portal end end }
     local world = { FindFirstChild = function(_,name) if name=="Lobby" then return lobby end end,
-        Raycast = function(_,_,direction)
+        Raycast = function(_,origin,direction)
             if direction.Y < 0 then return r.floor and { Normal = V.new(0,1,0) } or nil end
+            if r.blockForward and direction.X>math.abs(direction.Z)*2 then return {} end
             return r.wall and {} or nil
         end }
     local run = { BindToRenderStep = function(_,name,_,callback) r.binds[name] = callback end,
         UnbindFromRenderStep = function(_,name) r.binds[name] = nil end }
-    local path = { Status = "success", ComputeAsync = function() end,
+    local path = { Destroy=function() r.pathDestroyed=(r.pathDestroyed or 0)+1 end, Status = "success", ComputeAsync = function() end,
         GetWaypoints = function() return r.pathPoints or { { Position = r.nav.Approach } } end,
         Blocked = { Connect = function(_,callback)
             r.blocked=callback
@@ -141,7 +142,7 @@ eq(r.nav.Phase,"waiting","Late result cannot revive destroyed controller")
 eq(r.nav.Bound,false)
 r=rig(); r.wall=true; r:update(0); r.queued[1]()
 eq(r.nav.Phase,"approach","Use computed path")
-r:update(.2); r:render(); r.blocked(r.nav.Index)
+r.wall=false; r:update(.2); r:render(); r.blocked(r.nav.Index)
 eq(r.nav.Phase,"retry","Blocked path is invalidated")
 eq(r.nav.Bound,false)
 r=rig(); r.wall=true; r:update(0); local late=r.queued[1]
@@ -156,6 +157,14 @@ r.pathPoints={{Position=r.root.Position,Action="jump"},{Position=r.nav.Approach}
 r.queued[1](); r:update(.2)
 eq(r.humanoid.Jump,true,"Reached jump waypoint still triggers jump")
 r.nav:Destroy()
+
+r=rig(); r:update(0); r:render()
+r.blockForward=true; r.now=.1; r:render()
+eq(math.abs(r.direction.Z)>.1,true,"Live lobby avoidance steers around a new obstacle/player")
+eq(r.nav.LocalTarget~=nil,true,"Preview includes the actual local detour")
+r.floor=false; r.now=.2; r:render()
+eq(r.direction.Magnitude,0,"No blind sidestep across a gap in the lobby")
+eq(r.nav.Phase,"retry","Blocked safe alternatives trigger a new route search")
 
 Vector3,Enum,RaycastParams=previous.Vector3,previous.Enum,previous.RaycastParams
 print("PASS: "..checks.." portal navigation checks")

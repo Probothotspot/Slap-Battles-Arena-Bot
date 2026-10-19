@@ -37,7 +37,7 @@ Enum={Font={Gotham="Gotham",GothamBold="GothamBold"},TextXAlignment={Left="Left"
     UserInputType={MouseButton1="MouseButton1",Touch="Touch",MouseMovement="MouseMovement"}}
 local methods,mt={},{}
 Instance={new=function(class)
-    return setmetatable({_class=class,_children={},_signals={},_properties={Name=class,Visible=true}},mt)
+    return setmetatable({_class=class,_children={},_signals={},_properties={Name=class,Visible=true,ZIndex=1}},mt)
 end}
 mt.__index=function(self,k)
     if methods[k] then return methods[k] end
@@ -119,12 +119,18 @@ local Nav={Name="Navigation",Ready=true,new=function()
     end
     function nav:stop(message) self.Stops=self.Stops+1; self.Phase="waiting"; self.Message=message end
     function nav:getStatus() return self end
+    function nav:getRoute() return {} end
     function nav:Destroy() self.Destroyed=true; self:stop("closed") end
     return nav
 end}
 local modules={}
 local function loadModule(path)
     if path=="Navigation.lua" then return Nav end
+    if path=="ArenaNavigation.lua" then return {new=function() return {
+        Running=false,update=function() end,step=function() end,stop=function() end,Destroy=function() end,
+        getRoute=function() return {} end,getStatus=function() return {} end} end} end
+    if path=="PathPreview.lua" then return {new=function() return {
+        setEnabled=function() end,update=function() end,Destroy=function() end} end} end
     modules[path]=modules[path] or dofile(path); return modules[path]
 end
 _G.SlapBattlesArenaBot=nil
@@ -137,11 +143,15 @@ local function find(name) return assert(app.Gui:FindFirstChild(name,true),"Missi
 local function click(name) find(name).Activated:Fire() end
 eq(app.Running,false,"Start paused")
 eq(nav.Updates,0,"No movement before Start")
-eq(find("RunToggle").Text,"Старт бота")
+eq(find("RunLabel").Text,"Старт бота")
 eq(find("Overview").Visible,true)
+eq(find("RunToggle").Text,"","Gradient is on the background, not on the caption")
+eq(find("RunLabel").ZIndex>find("RunToggle").ZIndex,true,"Caption is above gradient")
+click("ShowPath"); eq(app.PathVisible,true); eq(find("ShowPath").Text,"Показать путь: вкл")
+click("ShowPath"); eq(app.PathVisible,false)
 click("RunToggle"); eq(app.Running,true)
 eq(nav.Updates,1)
-eq(find("RunToggle").Text,"Остановить бота")
+eq(find("RunLabel").Text,"Остановить бота")
 slaps.Value=103; heartbeat:Fire(.2)
 eq(app.Stats.SlapsEarned,3,"Real counter growth observed")
 local updates=nav.Updates
@@ -162,7 +172,7 @@ eq(find("UIScale").Scale<.7,true,"Scale down for phone viewport")
 eq(find("UIScale").Scale>0,true)
 eq(find("BotWindow").Position.X.Offset>=0,true,"Window stays on-screen")
 click("RunToggle"); eq(app.Running,false)
-eq(find("RunToggle").Text,"Старт бота")
+eq(find("RunLabel").Text,"Старт бота")
 heartbeat:Fire(.2); eq(nav.Updates,updates,"Heartbeat cannot resume paused bot")
 slaps.Value=110; eq(app.Stats.SlapsEarned,3,"Paused earnings excluded")
 click("RunToggle"); slaps.Value=112; eq(app.Stats.SlapsEarned,5)
