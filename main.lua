@@ -1,6 +1,6 @@
 local Main = {}
 
-function Main.start(loadModule, manifest)
+function Main.start(loadModule, manifest, diagnostics)
     local config = loadModule("config.lua")
     local Cleanup = loadModule("Cleanup.lua")
     local Logger = loadModule("Logger.lua")
@@ -50,6 +50,11 @@ function Main.start(loadModule, manifest)
     if not ok then
         app:Destroy()
         error("Arena Bot GUI failed: " .. tostring(err))
+    end
+    -- Failed startup keeps the diagnostics visible; successful sessions own their report.
+    if diagnostics then
+        app.Diagnostics = diagnostics
+        cleanup:add(function() diagnostics:Destroy() end)
     end
     logger:info("Scaffold " .. manifest.version .. " loaded. Combat is not implemented.")
     return app
