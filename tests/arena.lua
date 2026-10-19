@@ -16,11 +16,16 @@ end
 V.zero=V.new(0,0,0); Vector3=V
 local function frame(position,right,up,back)
     local cf={Position=position,RightVector=right or V.new(1,0,0),UpVector=up or V.new(0,1,0),BackVector=back or V.new(0,0,1)}
+    cf.LookVector=cf.BackVector*-1
     function cf:PointToWorldSpace(p) return self.Position+self.RightVector*p.X+self.UpVector*p.Y+self.BackVector*p.Z end
     function cf:PointToObjectSpace(p) local d=p-self.Position; return V.new(d:Dot(self.RightVector),d:Dot(self.UpVector),d:Dot(self.BackVector)) end
     return cf
 end
 CFrame={new=function(p) return frame(p) end}
+CFrame.lookAt=function(p,target,up)
+    local look=(target-p).Unit; local normal=up or V.new(0,1,0)
+    return frame(p,look:Cross(normal),normal,look*-1)
+end
 Enum={RaycastFilterType={Exclude="exclude"},Material={Water="water"},PathStatus={Success="success"},
     RenderPriority={Input={Value=100}}}
 RaycastParams={new=function() return {} end}; OverlapParams={new=function() return {} end}
@@ -40,6 +45,7 @@ local function collisionWorld(parts)
     local w={Queries=0,Parts=parts,Wall=false}
     function w:Raycast(origin,dir)
         self.Queries=self.Queries+1
+        if self.VisibilityWall and math.abs(dir.Y)<.01 then return {Instance=self.VisibilityWall} end
         local nearest,tmin
         for _,p in ipairs(self.Parts) do
             if p.Parent and p.CanCollide then
@@ -138,13 +144,14 @@ local function rig()
     r.World=collisionWorld({part(V.new(0,-.5,0),V.new(100,1,100))})
     local function player(name,x)
         local root={Parent=true,Position=V.new(x,3,0),AssemblyLinearVelocity=V.zero,CollisionGroup="Default",IsA=function() return true end}
-        local h={Parent=true,Health=100,Move=function(_,d) r.Direction=d; r.Moves=r.Moves+1; if d.Magnitude==0 then r.ZeroMoves=(r.ZeroMoves or 0)+1 end end,EquipTool=function() end}
+        root.CFrame=CFrame.lookAt(root.Position,root.Position+V.new(1,0,0))
+        local h={Parent=true,AutoRotate=true,Health=100,Move=function(_,d) r.Direction=d; r.Moves=r.Moves+1; if d.Magnitude==0 then r.ZeroMoves=(r.ZeroMoves or 0)+1 end end,EquipTool=function() end}
         local tool={Name="Default",Enabled=true,Activate=function() r.Activations=(r.Activations or 0)+1 end,Deactivate=function() end}
         local char={}
         function char:FindFirstChild(n) if n=="HumanoidRootPart" then return root end end
         function char:FindFirstChildOfClass(n) if n=="Humanoid" then return h elseif n=="Tool" then return tool end end
         tool.Parent=char
-        return {Name=name,Character=char},root,h,tool
+        return {Name=name,UserId=name=="self" and 1 or 2,Character=char},root,h,tool
     end
     r.Player,r.Root,r.Humanoid,r.Tool=player("self",0)
     r.Enemy,r.EnemyRoot,r.EnemyHumanoid=player("opponent",20)
@@ -209,7 +216,7 @@ r.World.Parts[1].Parent=nil; r.Now=.2; r:render()
 eq(r.Direction.Magnitude,0,"Lost floor releases walking immediately")
 r=rig(); r.EnemyRoot.Position=V.new(4,3,0); r:update()
 eq(r.Nav.Phase,"position","Hold spacing instead of walking onto target")
-local combat=C.new({Options=config.Attack,Clock=function() return r.Now end})
+local combat=C.new({Options=config.Attack,Clock=function() return r.Now end,Workspace=r.World,Player=r.Player,Arena=config.Arena})
 local observations={Target={Distance=4,LineOfSight=true,Invulnerable=false}}
 combat:update(r.Snapshot,{Action="slap"},r.Player.Character,r.Nav,observations)
 eq(combat.Attempts,1,"Activate ordinary Tool only in a checked attack position")
@@ -337,6 +344,101 @@ local originalSize=bridges[2].Size
 bridges[2].Size=V.new(2,1,2); r.Now=13; r:render()
 eq(r.Nav.Route,nil,"Changed board size invalidates its cached proof")
 bridges[2].Size=originalSize
+r.Nav:Destroy()
+
+-- Combat integration: turn without translation, throttle, recover on checked ground and correlated confirmations.
+local Adapter=dofile("SlapBattles.lua")
+local function battle()
+    local b=rig(); b.EnemyRoot.Position=V.new(4,3,0); b:update()
+    b.Adapter=Adapter.new({Player=b.Player})
+    b.Combat=C.new({Options=config.Attack,Clock=function() return b.Now end,Workspace=b.World,
+        Player=b.Player,Arena=config.Arena,Adapter=b.Adapter,Knowledge=dofile("GloveKnowledge.lua")})
+    b.Observations={Target={Distance=4,LineOfSight=true,Invulnerable=false}}
+    function b:prepare() self.Combat:update(self.Snapshot,{Action="slap"},self.Player.Character,self.Nav,self.Observations) end
+    return b
+end
+r=battle(); r.Root.CFrame=CFrame.lookAt(r.Root.Position,r.Root.Position+V.new(-1,0,0))
+local originalPosition=r.Root.Position
+r:prepare(); eq(r.Combat.Attempts,0,"Never attack while facing away")
+for _=1,8 do r.Now=r.Now+1/60; r.Combat:step(1/60) end
+eq(r.Combat.Attempts,0,"Wait for sufficient facing angle")
+for _=1,24 do r.Now=r.Now+1/60; r.Combat:step(1/60) end
+eq(r.Combat.Attempts,1,"Attack once after turning toward the target")
+eq((r.Root.CFrame.Position-originalPosition).Magnitude<.00001,true,"Facing never translates the root")
+eq(r.Root.CFrame.LookVector:Dot(V.new(1,0,0))>=math.cos(config.Attack.FacingTolerance),true)
+eq(r.Humanoid.AutoRotate,false,"Own facing only while in combat")
+local intent=r.Combat:getMovementIntent(r.Snapshot,r.Nav)
+eq(intent.Stance,"recover"); eq(intent.DesiredDistance>config.Attack.ConservativeRange,true,"Recover at a safer standoff distance")
+local oldNarrow=r.Nav._narrowCorridor; r.Nav._narrowCorridor=function() return true end
+local narrowIntent=r.Combat:getMovementIntent(r.Snapshot,r.Nav)
+eq(narrowIntent.DesiredDistance<config.Attack.ConservativeRange,true,"Do not demand a backward step on a narrow crossing")
+r.Nav._narrowCorridor=oldNarrow
+local deadline=r.Combat.NextAt
+r.Combat:stop(); eq(r.Humanoid.AutoRotate,true,"Stop restores the previous AutoRotate value")
+r:prepare(); eq(r.Combat.NextAt,deadline,"Stop/Start cannot reset an outstanding cooldown")
+eq(r.Combat.Attempts,1)
+r.Now=2; r.Tool.Enabled=false; r.Combat:step(.1); eq(r.Combat.Attempts,1,"Tool.Enabled gates real readiness")
+r.Tool.Enabled=true; r.EnemyRoot.Position=V.new(10,3,0); r.Combat:step(.1)
+eq(r.Combat.Attempts,1,"Execution rereads the live range instead of stale observation distance")
+r.EnemyRoot.Position=V.new(4,3,0); r.World.VisibilityWall=true; r.Combat:step(.1)
+eq(r.Combat.Attempts,1,"Execution rereads live line of sight")
+r.World.VisibilityWall=false; r.Humanoid.PlatformStand=true; r.Combat:step(.1)
+eq(r.Combat.Attempts,1,"Ragdoll blocks attacks and facing")
+r.Humanoid.PlatformStand=false; r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
+
+r=battle(); r:prepare(); eq(r.Combat.Attempts,1)
+r.Nav.Combat=r.Combat; r.Now=.2; r:update()
+for _=1,100 do r:step(); if r.Nav.Route then break end end
+r:render(); eq(r.Direction.X<0,true,"Post-swing navigation finds a supported short retreat")
+r.Root.Position=V.new(-1.7,3,0); r.Now=2; r:update()
+local recoveryRoute=r.Nav.Route
+for _=1,100 do r:step(); r:render(); if r.Nav.Route and r.Nav.Route~=recoveryRoute then break end end
+r:render(); eq(r.Direction.X>0,true,"Resume pursuit after cooldown ends")
+r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
+
+r=battle(); r:prepare(); r.World.Parts=parts; r.Root.Position=V.new(10,4.75,16)
+r.Nav.Route=nil -- Holding attack position has already released the walking route.
+local bridgeIntent=r.Combat:getMovementIntent(r.Snapshot,r.Nav)
+eq(bridgeIntent.Narrow,true,"Detect narrow footing even after clearing the route to hold attack position")
+eq(bridgeIntent.DesiredDistance<config.Attack.ConservativeRange,true,"Recovery cannot demand a blind retreat off a board")
+r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
+r=battle(); r.Tool.Activate=function() error("tool rejected") end
+r:prepare(); eq(r.Combat.Attempts,1,"An activation request is an attempt even if the Tool throws")
+eq(r.Combat.ActivationErrors,1,"Activation exceptions have a separate counter")
+eq(r.Combat:snapshot().PendingAttacks,0,"Failed activation cannot await a hit acknowledgement")
+r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
+r=battle(); r.Humanoid.AutoRotate=false; r:prepare(); r.Combat:stop()
+eq(r.Humanoid.AutoRotate,false,"Restore an originally disabled AutoRotate without enabling it")
+r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
+
+local function feed()
+    local f={Connections={}}
+    function f:Connect(cb)
+        local c={Connected=true,Callback=cb}; function c:Disconnect() self.Connected=false end
+        table.insert(self.Connections,c); return c
+    end
+    function f:Fire(payload) for _,c in ipairs(self.Connections) do if c.Connected then c.Callback(payload) end end end
+    return f
+end
+r=battle(); r:prepare()
+eq(r.Combat:snapshot().ConfirmedHits,nil,"No fabricated confirmations without a game feed")
+local events=feed()
+r.Adapter:bindHitFeed(events,function(p) return p end,function(p) r.Combat:confirm(p) end)
+eq(r.Combat:snapshot().ConfirmedHits,0,"A bound feed enables a separate confirmed counter")
+local id=r.Combat.Sequence
+local function ack(attack,event,target,attacker) return {AttackId=attack,EventId=event,TargetUserId=target or 2,AttackerUserId=attacker or 1} end
+events:Fire(ack(id,"wrong attacker",2,3)); events:Fire(ack(id,"wrong target",3)); events:Fire(ack(999,"unknown attempt"))
+eq(r.Combat.ConfirmedHits,0,"Reject confirmations for other attackers, targets and unknown attempts")
+events:Fire(ack(id,"hit-1")); eq(r.Combat.ConfirmedHits,1,"Count a correlated confirmation once")
+events:Fire(ack(id,"hit-1")); eq(r.Combat.ConfirmedHits,1,"Deduplicate repeated server event delivery")
+r.Now=2; r.Combat:step(.1); local nextId=r.Combat.Sequence
+events:Fire(ack(nextId,"hit-1")); eq(r.Combat.ConfirmedHits,1,"A replayed event ID cannot confirm a different swing")
+r.Now=5; events:Fire(ack(nextId,"too-late")); eq(r.Combat.ConfirmedHits,1,"Expired attempts cannot be confirmed")
+eq(r.Combat.Unconfirmed>0,true,"Expiry is tracked as unconfirmed, not as a proven miss")
+r.Adapter:bindHitFeed(feed(),function() error("decoder failure") end,function(p) r.Combat:confirm(p) end)
+eq(events.Connections[1].Connected,false,"Replacing an adapter disconnects its old signal")
+r.Combat:stop(); events:Fire(ack(nextId,"after-stop")); eq(r.Combat.ConfirmedHits,1,"Paused session ignores late acknowledgements")
+r.Combat:Destroy(); r.Adapter:Destroy(); eq(r.Adapter.HitFeedAvailable,false,"Cleanup clears hit-feed availability")
 r.Nav:Destroy()
 
 -- Preview uses a bounded object pool, floor projection, animation, immediate toggle and cleanup.

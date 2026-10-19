@@ -30,7 +30,7 @@ Color3={fromRGB=function(r,g,b) return {r,g,b} end}
 ColorSequence={new=function(v) return v end}
 ColorSequenceKeypoint={new=function(t,c) return {t,c} end}
 TweenInfo={new=function(...) return {...} end}
-Enum={Font={Gotham="Gotham",GothamBold="GothamBold"},TextXAlignment={Left="Left"},
+Enum={Font={Gotham="Gotham",GothamBold="GothamBold"},TextXAlignment={Left="Left",Center="Center"},
     TextYAlignment={Center="Center",Top="Top"},ZIndexBehavior={Sibling="Sibling"},
     AutomaticSize={Y="Y"},ScrollingDirection={Y="Y"},SortOrder={LayoutOrder="LayoutOrder"},
     EasingStyle={Linear="Linear",Quad="Quad"},EasingDirection={InOut="InOut",Out="Out"},
@@ -145,23 +145,34 @@ eq(app.Running,false,"Start paused")
 eq(nav.Updates,0,"No movement before Start")
 eq(find("RunLabel").Text,"Старт бота")
 eq(find("Overview").Visible,true)
+eq(find("AuthorCredit").Text,"By: Probothotspot","Exact requested author label")
+eq(find("AuthorCredit"):FindFirstChildOfClass("UIGradient")~=nil,true,"White-gray animated credit has a gradient")
+eq(find("ConfirmedHits").Text,"—","Unavailable confirmations are not invented hits")
 eq(find("RunToggle").Text,"","Gradient is on the background, not on the caption")
 eq(find("RunLabel").ZIndex>find("RunToggle").ZIndex,true,"Caption is above gradient")
 click("ShowPath"); eq(app.PathVisible,true); eq(find("ShowPath").Text,"Показать путь: вкл")
 click("ShowPath"); eq(app.PathVisible,false)
+find("AttackRange").Text="5,2"; find("AttackInterval").Text="0,9"; click("ApplyCombat")
+eq(app.Config.Attack.GloveProfiles.Default.Range,5.2,"Apply range tuning")
+eq(app.Config.Attack.GloveProfiles.Default.Interval,.9,"Apply cooldown tuning")
+find("AttackRange").Text="abc"; click("ApplyCombat")
+eq(app.Config.Attack.GloveProfiles.Default.Range,5.2,"Invalid input cannot corrupt combat profile")
 click("RunToggle"); eq(app.Running,true)
 eq(nav.Updates,1)
 eq(find("RunLabel").Text,"Остановить бота")
 slaps.Value=103; heartbeat:Fire(.2)
 eq(app.Stats.SlapsEarned,3,"Real counter growth observed")
+eq(find("ConfirmedHits").Text,"—","Slaps counter increases never fabricate landed hits")
 local updates=nav.Updates
 click("Collapse"); eq(find("Body").Visible,false,"Collapse really hides content")
 eq(find("BotWindow").Size.Y.Offset,60,"Collapse really shrinks window")
 eq(find("Collapse").Text,"+")
+eq(find("AuthorCredit").Visible,false,"Footer hides with the expanded body")
 eq(app.Running,true,"Collapse does not stop bot")
 click("Collapse"); eq(find("Body").Visible,true)
 eq(find("BotWindow").Size.Y.Offset,590)
 eq(find("Collapse").Text,"−")
+eq(find("AuthorCredit").Visible,true)
 click("StatisticsTab"); eq(find("Statistics").Visible,true)
 eq(find("Overview").Visible,false)
 click("JournalTab"); eq(find("Journal").Visible,true)
