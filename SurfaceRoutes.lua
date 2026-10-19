@@ -67,7 +67,8 @@ function S.new(context)
     function self:project(point,up,down)
         local hit=self:ray(point+Vector3.new(0,up or 3,0),Vector3.new(0,-(down or 8),0))
         if not hit or hit.Normal.Y<o.MinNormalY or hit.Material==Enum.Material.Water then return nil end
-        return {Position=hit.Position,Part=hit.Instance,Pose=hit.Instance:IsA("BasePart") and hit.Instance.CFrame or nil}
+        return {Position=hit.Position,Part=hit.Instance,Pose=hit.Instance:IsA("BasePart") and hit.Instance.CFrame or nil,
+            Size=hit.Instance:IsA("BasePart") and hit.Instance.Size or nil}
     end
     function self:segment(a,b)
         local delta=b-a; local horizontal=flat(delta).Magnitude
@@ -75,16 +76,25 @@ function S.new(context)
         if math.abs(delta.Y)>o.StepHeight+horizontal*o.MaxSlope then return false end
         local count=math.max(1,math.ceil(horizontal/o.ProbeSpacing))
         local last
+        local proofs,seen={},{}
+        local function remember(node)
+            if node and not seen[node.Part] then
+                seen[node.Part]=true
+                table.insert(proofs,{Part=node.Part,Pose=node.Pose,Size=node.Size})
+            end
+        end
         for i=0,count do
             local point=a+delta*(i/count)
             local node=self:project(point,o.StepHeight+.25,2*o.StepHeight+.5)
             if not node or math.abs(node.Position.Y-point.Y)>o.StepHeight then return false end
+            remember(node)
             if last and math.abs(node.Position.Y-last.Y)>o.StepHeight+horizontal/count*o.MaxSlope then return false end
             -- Footprint samples tolerate narrow planks but reject a centerline on a knife edge.
             local side=horizontal>.01 and Vector3.new(-delta.Z,0,delta.X).Unit*o.FootRadius or Vector3.new(o.FootRadius,0,0)
             for _,offset in ipairs({side,side*-1}) do
                 local support=self:project(node.Position+offset,.75,1.5)
                 if not support or math.abs(support.Position.Y-node.Position.Y)>.7 then return false end
+                remember(support)
             end
             -- Volume clearance, elevated above the surface. Detect a Fort wall without knowing its name.
             if last then
@@ -95,10 +105,14 @@ function S.new(context)
             end
             last=node.Position
         end
-        return true
+        return true,proofs
     end
     function self:validate(route)
-        for i=2,#route do if not self:segment(route[i-1].Position,route[i].Position) then return false end end
+        for i=2,#route do
+            local ok,proofs=self:segment(route[i-1].Position,route[i].Position)
+            if not ok then return false end
+            route[i].Supports=proofs
+        end
         return #route>1
     end
     function self:build(parts,origin,goals)
@@ -110,7 +124,7 @@ function S.new(context)
             local p=node.Position
             local tag=math.floor(p.X*2)..":"..math.floor(p.Y*2)..":"..math.floor(p.Z*2)
             if dedup[tag] then return dedup[tag] end
-            local id=#nodes+1; nodes[id]=node; dedup[tag]=id
+            local id=#nodes+1; node.Id=id; nodes[id]=node; dedup[tag]=id
             local k=key(p); buckets[k]=buckets[k] or {}; table.insert(buckets[k],id)
             return id
         end
@@ -155,17 +169,21 @@ function S.new(context)
             local result={}; for i=1,math.min(o.MaxNeighbors,#found) do result[i]=found[i].id end
             return result
         end
-        local cache={}
+        local cache,proofCache={},{}
         local function edge(a,b)
             local k=a..":"..b
             if cache[k]==nil then
                 local na,nb=nodes[a],nodes[b]
-                cache[k]=self:segment(na.Position,nb.Position) and
-                    dist(na.Position,nb.Position)*(nb.Narrow and 1.12 or 1)+math.max(0,nb.Position.Y-na.Position.Y)*.2 or false
+                local safe,proofs=self:segment(na.Position,nb.Position)
+                cache[k]=safe and dist(na.Position,nb.Position)*(nb.Narrow and 1.12 or 1)+math.max(0,nb.Position.Y-na.Position.Y)*.2 or false
+                proofCache[k]=proofs
             end
             return cache[k]
         end
         local route,cost,expanded=S.search(nodes,start,goalIds,neighbors,edge,step,o.MaxExpanded)
+        if route then
+            for i=2,#route do route[i].Supports=proofCache[route[i-1].Id..":"..route[i].Id] end
+        end
         return route,cost,{Nodes=#nodes,Expanded=expanded}
     end
     return self

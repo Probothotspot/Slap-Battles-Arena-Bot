@@ -24,7 +24,7 @@ return {
         CacheSeconds=4, CacheDistance=25, MaxSegment=35,
         ProbeSpacing=.8, FootRadius=.28, BodyRadius=1, BodyHeight=3.5,
         StepHeight=1, MinNormalY=.7, MaxSlope=.8,
-        LookAhead=2, CheckInterval=.08, WaypointReach=.65,
+        LookAhead=2, CheckInterval=.08, WaypointReach=.65, EndpointRefreshDistance=10, PassedPointCorridor=.6, CachedCorridor=.35,
         MaxVerticalSpeed=12, StuckSeconds=2, AttachDistance=5,
     },
     Attack = { Enabled=true, ConservativeRange=4.5, Interval=.8 },

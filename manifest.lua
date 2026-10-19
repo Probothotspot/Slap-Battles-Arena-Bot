@@ -1,6 +1,6 @@
 return {
     schemaVersion = 1,
-    version = "0.5.0",
+    version = "0.5.1",
     entry = "main.lua",
     systems = {
         { name = "SessionStats", path = "SessionStats.lua" },

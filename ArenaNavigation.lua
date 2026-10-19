@@ -26,11 +26,12 @@ function A.new(context)
         self.Direction=Vector3.zero; self.LocalTarget=nil
         if (self.Running or self.Bound) and self.Humanoid and self.Humanoid.Parent then self.Humanoid:Move(Vector3.zero,false) end
     end
-    function self:_clearPath()
-        self.Route=nil; self.Index=1; self.RouteCost=nil
+    function self:_clearPath(release)
+        self.Route=nil; self.Index=1; self.RouteCost=nil; self.SupportScan=2
+        self.RefreshAllowed=false; self.GroundOffset=nil
         if self.Blocked then self.Blocked:Disconnect(); self.Blocked=nil end
         if self.Path then self.Path:Destroy(); self.Path=nil end
-        self:_release()
+        if release~=false then self:_release() end
     end
     function self:_dropPending()
         if self.PendingPath and self.PendingPath~=self.Path then self.PendingPath:Destroy() end
@@ -88,7 +89,58 @@ function A.new(context)
         end
         return c,r,h
     end
+    function self:_supportsValid(proofs)
+        if not proofs then return false end
+        for _,proof in ipairs(proofs) do
+            local part=proof.Part
+            if not part or not part.Parent or not part.CanCollide
+                or (proof.Pose and part.CFrame~=proof.Pose) or (proof.Size and part.Size~=proof.Size) then return false end
+        end
+        return true
+    end
+    function self:_narrowCorridor()
+        if not self.Route then return false end
+        for i=self.Index,math.min(#self.Route,self.Index+1) do
+            local node=self.Route[i]
+            if node.Narrow then return true end
+            for _,proof in ipairs(node.Supports or {}) do
+                if proof.Size and math.min(proof.Size.X,proof.Size.Z)<4 then return true end
+            end
+        end
+        return false
+    end
+    function self:_canRefresh()
+        if not self.Route then return true end
+        if self:_narrowCorridor() then return false end
+        local remaining=0; local p=self.Root.Position
+        for i=self.Index,#self.Route do
+            remaining=remaining+distance(p,self.Route[i].Position); p=self.Route[i].Position
+            if remaining>o.EndpointRefreshDistance then return false end
+        end
+        return true
+    end
+    function self:_advance(ground,now)
+        if not self.Route then return end
+        local point=self.Route[self.Index]
+        while point do
+            local previous=self.Route[self.Index-1]
+            local reached=distance(ground,point.Position)<=o.WaypointReach
+            if not reached and previous then
+                local edge=flat(point.Position-previous.Position); local length=edge.Magnitude
+                if length>.01 then
+                    local along=flat(ground-previous.Position):Dot(edge.Unit)
+                    local cross=flat(ground-previous.Position-edge.Unit*along).Magnitude
+                    reached=along>=length and cross<=o.PassedPointCorridor and distance(ground,point.Position)<=o.LookAhead+o.WaypointReach
+                end
+            end
+            if not reached or math.abs(ground.Y-point.Position.Y)>=1.5 then break end
+            self.Index=self.Index+1; self.BestDistance,self.LastProgress=math.huge,now
+            self.CheckedAt=nil; point=self.Route[self.Index]
+        end
+    end
     function self:_select(now)
+        if self.Route and self.Target and self.Target.Character==self.TargetCharacter
+            and self:_narrowCorridor() and self:_targetValid(self.Target) then return end
         if now<self.NextSelect and self.Target and self.Target.Character==self.TargetCharacter and self:_targetValid(self.Target) then return end
         self.NextSelect=now+o.SelectInterval
         local best,bestScore=nil,math.huge
@@ -114,27 +166,49 @@ function A.new(context)
         if self.Destroyed or not self.Running or generation~=self.Generation or not self.Target
             or self.Target.Character~=self.TargetCharacter then if path then path:Destroy() end; return end
         if not route or #route<2 then if path then path:Destroy() end; return end
-        -- A useful old route may keep the character moving during a refresh. Attach the
-        -- new result to its nearest reachable future node rather than teleporting back to its origin.
-        if distance(route[1].Position,self.Root.Position)>o.AttachDistance then
-            local geom=self:_geometry(function() self:_checkpoint() end)
-            local ground=geom:project(self.Root.Position,1,8)
-            local best,bestDistance=nil,o.AttachDistance
-            if ground then
-                for i=2,#route do
-                    self:_checkpoint()
-                    local d=(ground.Position-route[i].Position).Magnitude
-                    if d<bestDistance and geom:segment(ground.Position,route[i].Position) then best,bestDistance=i,d end
+        -- Keep the chosen crossing, including when a second planner returns a slightly cheaper alternative.
+        if self.Route and not self.RefreshAllowed then if path then path:Destroy() end; return end
+        local geom=self:_geometry(function() self:_checkpoint() end)
+        local ground=geom:project(self.Root.Position,1,8)
+        local candidates={}
+        if ground then
+            for i=2,#route do
+                self:_checkpoint()
+                local a,b=route[i-1].Position,route[i].Position
+                local edge=b-a; local length=edge.Magnitude
+                if length>.01 then
+                    local t=math.max(0,math.min(1,(ground.Position-a):Dot(edge)/(length*length)))
+                    local projection=a+edge*t
+                    local d=(ground.Position-projection).Magnitude
+                    if d<=o.AttachDistance then table.insert(candidates,{Index=i,Point=projection,Distance=d}) end
                 end
             end
-            if not best then if path then path:Destroy() end; return end
-            local attached={ground}; for i=best,#route do table.insert(attached,route[i]) end
-            route=attached
         end
+        table.sort(candidates,function(a,b) return a.Distance<b.Distance end)
+        local attached
+        for _,candidate in ipairs(candidates) do
+            local node=geom:project(candidate.Point,1,3)
+            if node then
+                local safe,proofs=geom:segment(ground.Position,node.Position)
+                if safe then
+                    node.Supports=proofs; node.EngineIndex=route[candidate.Index].EngineIndex
+                    -- Projection skips the old prefix even if the bot moved less than AttachDistance.
+                    attached={ground}
+                    if (node.Position-ground.Position).Magnitude>.05 then table.insert(attached,node) end
+                    for i=candidate.Index,#route do table.insert(attached,route[i]) end
+                    break
+                end
+            end
+        end
+        if not attached then if path then path:Destroy() end; return end
+        route=attached
         if self.Route and self.RouteCost and cost>=self.RouteCost*.95 then if path then path:Destroy() end; return end
-        self:_clearPath()
+        self:_clearPath(false) -- Swapping a route must not issue a zero movement command.
         self.Route,self.RouteCost,self.Index,self.Path=route,cost,2,path
         self.RouteSource,self.LastProgress,self.BestDistance=source,clock(),math.huge
+        self.CheckedAt=nil
+        self.Job=nil -- The accepted route is settled; stop evaluating alternative graph routes.
+        self.PlanStarted=nil; self.AttemptFinished=true
         self.Phase,self.Message="pursuit","Иду к "..self.TargetName.." · "..source
         if path then
             self.Blocked=path.Blocked:Connect(function(index)
@@ -173,6 +247,7 @@ function A.new(context)
         self.NextPlan=now+o.MinReplanInterval; self.Plans=self.Plans+1
         self.Generation=self.Generation+1; local generation=self.Generation
         self.PlanTarget=targetRoot.Position; self.PlanStarted=now; self.RouteCost=nil; self.AttemptFinished=false
+        self.RefreshAllowed=self.Route~=nil
         local origin=self.Root.Position; local params,exclude=self:_params(); self.Params=params
         local function checkpoint() self:_checkpoint() end
         self.Job=coroutine.create(function()
@@ -181,7 +256,9 @@ function A.new(context)
             local goals=self:_goals(geom,targetRoot); if #goals==0 then return end
             local best,bestCost
             for _,goal in ipairs(goals) do
-                if geom:segment(start.Position,goal.Position) then
+                local safe,proofs=geom:segment(start.Position,goal.Position)
+                if safe then
+                    goal.Supports=proofs
                     local cost=(goal.Position-start.Position).Magnitude
                     if not bestCost or cost<bestCost then best,bestCost={start,goal},cost end
                 end
@@ -200,6 +277,7 @@ function A.new(context)
                 end)
                 self.EngineBusy=false
                 if self.Destroyed or not self.Running or generation~=self.Generation then if path then path:Destroy() end; return end
+                if self.Route and not self.RefreshAllowed then if path then path:Destroy() end; return end
                 if ok and points and #points>1 then
                     self.EngineCandidate={Points=points,Path=path,Generation=generation,Start=start}
                 elseif path then path:Destroy() end
@@ -267,6 +345,24 @@ function A.new(context)
             self.NextPlan=math.max(self.NextPlan,now+o.RetryDelay)
         end
     end
+    function self:_stepClear(geom,start,look,point,body)
+        local edgeStart=self.Route[math.max(1,self.Index-1)].Position
+        local edge=flat(point.Position-edgeStart)
+        local t=edge.Magnitude>.01 and flat(start-edgeStart):Dot(edge)/(edge.Magnitude*edge.Magnitude) or 0
+        local cross=distance(start,edgeStart+edge*t)
+        if not point.Supports or cross>o.CachedCorridor then return geom:segment(start,look) end
+        if not self:_supportsValid(point.Supports) then return false end
+        -- This edge was already validated. Recheck changed geometry and the next footfall,
+        -- rather than re-proving all footprint samples and rebuilding the route.
+        local delta=look-start
+        for _,t in ipairs({.5,1}) do
+            local expected=start+delta*t
+            local node=geom:project(expected,o.StepHeight+.25,2*o.StepHeight+.5)
+            if not node or math.abs(node.Position.Y-expected.Y)>o.StepHeight then return false end
+        end
+        local lift=Vector3.new(0,o.BodyHeight/2+o.StepHeight,0)
+        return not world:Blockcast(CFrame.new(start+lift),Vector3.new(o.BodyRadius*2,o.BodyHeight,o.BodyRadius*2),delta,body)
+    end
     function self:_safety(now)
         if not self.Route then self:_release(); return end
         local root,h=self.Root,self.Humanoid
@@ -275,18 +371,25 @@ function A.new(context)
         local geom=self:_geometry(nil,nil,body)
         local start=geom:project(root.Position,1,8)
         if not start or math.abs((root.AssemblyLinearVelocity or Vector3.zero).Y)>o.MaxVerticalSpeed then self:_release(); return end
+        self.GroundOffset=root.Position.Y-start.Position.Y
+        self:_advance(start.Position,now)
         local point=self.Route[self.Index]
-        while point and distance(root.Position,point.Position)<=o.WaypointReach and math.abs(start.Position.Y-point.Position.Y)<1.5 do
-            self.Index=self.Index+1; self.BestDistance,self.LastProgress=math.huge,now; point=self.Route[self.Index]
-        end
         if not point then self.AttemptFinished=true; self:_clearPath(); self.Phase,self.Message="position","Держу дистанцию от "..self.TargetName; return end
         if point.Part and (not point.Part.Parent or not point.Part.CanCollide or point.Pose~=point.Part.CFrame) then
             self:_invalidate("Опора изменилась"); return
         end
+        -- Round-robin stamp checks catch a removed/moved/resized board further along the path.
+        for _=1,3 do
+            local scan=math.max(self.Index,self.SupportScan or self.Index)
+            if scan>#self.Route then scan=self.Index end
+            local proofs=self.Route[scan].Supports
+            if proofs and not self:_supportsValid(proofs) then self:_invalidate("Опора маршрута изменилась"); return end
+            self.SupportScan=scan+1
+        end
         local delta=point.Position-start.Position; local d=flat(delta).Magnitude
         local look=start.Position+delta*(math.min(o.LookAhead,d)/math.max(d,.001))
         self.LocalTarget=nil
-        if not geom:segment(start.Position,look) then
+        if not self:_stepClear(geom,start.Position,look,point,body) then
             local found=false
             local direction=flat(delta).Unit
             for _,angle in ipairs({math.pi/3,-math.pi/3}) do
@@ -310,12 +413,19 @@ function A.new(context)
         local _,root,h=playerRig(player,bounds)
         if root~=self.Root or not h or h.Sit or h.PlatformStand then self:_release(); return end
         if not self.Target or not self:_targetValid(self.Target) or self.Target.Character~=self.TargetCharacter then self:_release(); return end
+        if self.Route and self.GroundOffset then
+            self:_advance(root.Position-Vector3.new(0,self.GroundOffset,0),now)
+        end
         if not self.CheckedAt or now-self.CheckedAt>o.CheckInterval then
             self.CheckedAt=now
             local ok,err=pcall(function() self:_safety(now) end)
             if not ok then self.LastError=tostring(err); self:_invalidate("Не удалось проверить опору"); return end
         end
         if not self.Route or now-(self.CheckedAt or 0)>o.CheckInterval*2 then self.Direction=Vector3.zero end
+        if self.Route and not self.LocalTarget and self.Route[self.Index] then
+            local delta=flat(self.Route[self.Index].Position-root.Position)
+            if self.Direction.Magnitude>0 then self.Direction=delta.Magnitude>.01 and delta.Unit or Vector3.zero end
+        end
         h:Move(self.Direction,false)
     end
     function self:update(snapshot,now)
@@ -350,7 +460,7 @@ function A.new(context)
             self.AttemptFinished=true; self:_clearPath(); self.Message="Держу дистанцию от "..self.TargetName; self.Phase="position"
         else
             local moved=not self.PlanTarget or distance(self.PlanTarget,targetRoot.Position)>o.TargetReplanDistance
-            if not self.Route or moved then self:_request(now,targetRoot) end
+            if not self.Route or (moved and self:_canRefresh()) then self:_request(now,targetRoot) end
         end
     end
     function self:step()
