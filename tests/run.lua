@@ -169,6 +169,7 @@ eq(tracker:snapshot(player, 9).ArenaState, "arena", "Returns after root becomes 
 eq(pcall(P.new, { LobbyMinY = 400, LobbyMaxY = 300 }), false, "Invalid bounds rejected")
 
 local manifest = dofile("manifest.lua")
+checks = checks + dofile("tests/navigation.lua")
 for _, entry in ipairs(manifest.systems) do
     local module = dofile(entry.path)
     eq(module.Name, entry.name)
