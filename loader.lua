@@ -25,14 +25,12 @@ local function create(class, properties, owner)
 end
 local gui = create("ScreenGui",{Name="ArenaBotLoadingGUI",ResetOnSpawn=false,
     IgnoreGuiInset=true,DisplayOrder=200,ZIndexBehavior=Enum.ZIndexBehavior.Sibling},parent)
-local strip = create("Frame",{Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,0,0,30),
-    BackgroundColor3=Color3.fromRGB(25,22,36),BackgroundTransparency=0.08,BorderSizePixel=0},gui)
-local label = create("TextLabel",{Text="loading modules 0/1",Size=UDim2.new(1,-16,1,-3),
-    Position=UDim2.fromOffset(8,0),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,
-    TextSize=14,TextColor3=Color3.fromRGB(238,233,250),TextWrapped=false,
+local strip = create("Frame",{Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,0,0,35),
+    BackgroundColor3=Color3.fromRGB(0,0,0),BackgroundTransparency=0,BorderSizePixel=0},gui)
+local label = create("TextLabel",{Text="loading modules 0/1",Size=UDim2.fromScale(1,1),
+    Position=UDim2.fromOffset(0,0),BackgroundTransparency=1,Font=Enum.Font.Arial,
+    TextSize=32,TextColor3=Color3.fromRGB(255,255,255),TextWrapped=false,
     TextXAlignment=Enum.TextXAlignment.Center},strip)
-local fill = create("Frame",{Position=UDim2.new(0,0,1,-3),Size=UDim2.new(0,0,0,3),
-    BorderSizePixel=0,BackgroundColor3=Color3.fromRGB(151,105,235)},strip)
 function report:Destroy()
     if self.Destroyed then return end
     self.Destroyed=true
@@ -52,9 +50,6 @@ local function fail(detail)
     report.State,report.Finished,report.LastError="error",true,tostring(detail)
     report.Errors=report.Errors+1
     label.Text="error"
-    label.TextColor3=Color3.fromRGB(255,146,156)
-    fill.Size=UDim2.new(1,0,0,3)
-    fill.BackgroundColor3=Color3.fromRGB(235,80,100)
 end
 connect(gui.Destroying,function() report:Destroy() end)
 local function awaitResult(callback)
@@ -155,7 +150,6 @@ end
 if not ok then fail(err); return nil,report end
 report.State,report.Completed,report.Finished="ready",1,true
 label.Text="loading modules 1/1"
-fill.Size=UDim2.new(1,0,0,3)
 -- Only the word "error" is exposed. Details remain in the internal report.
 pcall(function()
     connect(game:GetService("LogService").MessageOut,function(message,kind)
@@ -171,3 +165,4 @@ if report.State=="ready" then
     report.Hidden=true
 end
 return app,report
+

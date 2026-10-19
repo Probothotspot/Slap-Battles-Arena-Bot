@@ -1,3 +1,17 @@
--- Future implementation: score attack, flank, dodge, retreat and idle actions.
--- Consume a Perception snapshot and return a proposed action.
-return { Name = "Decision", Ready = false }
+-- Returns proposals only. Navigation/Combat must validate and execute separately.
+local Decision = { Name = "Decision", Ready = true }
+
+function Decision.plan(knowledge, snapshot, observations)
+    local context = {}
+    for key, value in pairs(observations or {}) do context[key] = value end
+    -- Callers cannot override the locally observed life/arena/tool state.
+    context.Alive = snapshot.Alive
+    context.ArenaState = snapshot.ArenaState
+    context.AmbiguousTools = snapshot.AmbiguousTools
+    context.Equipped = snapshot.EquippedTool
+    context.HasTool = (snapshot.ToolCount or 0) > 0
+    return knowledge.plan(snapshot.GloveName, context)
+end
+
+return Decision
+

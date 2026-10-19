@@ -5,5 +5,7 @@ return {
     PerceptionInterval = 0.2,
     DecisionInterval = 0.1,
     ReactionDelay = 0.15,
-    UI = { Width = 360, Height = 300 },
+    Arena = { LobbyMinY = 300, LobbyMaxY = 400 },
+    UI = { Width = 360, Height = 370 },
 }
+

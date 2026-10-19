@@ -34,6 +34,7 @@ function Gui.mount(context)
     title.Parent = frame
 
     local body = Instance.new("TextLabel")
+    body.Name = "StateBody"
     body.Size = UDim2.new(1, -28, 1, -60)
     body.Position = UDim2.fromOffset(14, 50)
     body.BackgroundTransparency = 1
@@ -43,13 +44,7 @@ function Gui.mount(context)
     body.TextXAlignment = Enum.TextXAlignment.Left
     body.TextYAlignment = Enum.TextYAlignment.Top
     body.TextWrapped = true
-    local lines = { "Каркас загружен. Боевое поведение ещё не подключено.", "" }
-    for _, entry in ipairs(context.Manifest.systems) do
-        local module = context.App.Systems[entry.name]
-        table.insert(lines, entry.name .. ": " .. (module.Ready and "готов" or "заготовка"))
-    end
-    table.insert(lines, "\nПеретащи окно за заголовок. Закрытие завершает сессию.")
-    body.Text = table.concat(lines, "\n")
+    body.Text = "Подключение базы перчаток..."
     body.Parent = frame
 
     local close = Instance.new("TextButton")
@@ -87,4 +82,22 @@ function Gui.mount(context)
     return gui
 end
 
+function Gui.update(gui, app)
+    local body = gui:FindFirstChild("StateBody", true)
+    if not body then return end
+    local snapshot, glove, plan = app.Snapshot, app.Glove, app.Plan
+    local states = { arena = "арена", lobby = "лобби", waiting = "ожидание" }
+    body.Text = table.concat({
+        "Состояние: " .. (states[snapshot.ArenaState] or "ожидание"),
+        "Высота Y: " .. (snapshot.HeightY and string.format("%.2f", snapshot.HeightY) or "—"),
+        "Перчатка: " .. (snapshot.GloveName or (snapshot.AmbiguousTools and "выбери инструмент" or "нет")),
+        "Профиль: " .. (glove and (glove.Known and glove.Policy or "базовый (новая перчатка)") or "—"),
+        "Каталог: " .. app.CatalogStats.Total .. " записей; особых профилей: " .. app.CatalogStats.Specialized,
+        "", glove and glove.Hint or "Ожидание инструмента в инвентаре или руке.",
+        "", "План: " .. plan.Reason,
+        "Выполнение движения и атак ещё не подключено.",
+    }, "\n")
+end
+
 return Gui
+

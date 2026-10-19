@@ -56,10 +56,52 @@ function Main.start(loadModule, manifest, diagnostics)
         app.Diagnostics = diagnostics
         cleanup:add(function() diagnostics:Destroy() end)
     end
+    local inventory = systems.Perception.new(config.Arena)
+    app.GloveKnowledge = systems.GloveKnowledge
+    app.CatalogStats = app.GloveKnowledge.stats()
+    app.Status = "observing"
+
+    function app:GetCombatPlan(observations)
+        if self.Destroyed then
+            return { Action = "wait", Reason = "Сессия завершена", Execute = false }
+        end
+        -- Always refresh to avoid decisions based on a stale death/glove snapshot.
+        local player = game:GetService("Players").LocalPlayer
+        self.Snapshot = inventory:snapshot(player)
+        return systems.Decision.plan(self.GloveKnowledge, self.Snapshot, observations)
+    end
+
+    local function refresh()
+        app.Plan = app:GetCombatPlan()
+        app.Glove = app.Snapshot.GloveName and app.GloveKnowledge.get(app.Snapshot.GloveName)
+        Gui.update(app.Gui, app)
+    end
+    local started, startError = pcall(function()
+        refresh()
+        local elapsed = 0
+        local heartbeat
+        heartbeat = game:GetService("RunService").Heartbeat:Connect(function(dt)
+            elapsed = elapsed + dt
+            if app.Destroyed or elapsed < config.PerceptionInterval then return end
+            elapsed = 0
+            local refreshed, refreshError = pcall(refresh)
+            if not refreshed then
+                heartbeat:Disconnect()
+                app.Status, app.LastError = "error", tostring(refreshError)
+                warn("[ArenaBot] Inventory observation failed: " .. app.LastError)
+            end
+        end)
+        cleanup:add(heartbeat)
+    end)
+    if not started then
+        app:Destroy()
+        error("[ArenaBot] Glove initialization failed: " .. tostring(startError))
+    end
     if not diagnostics or not diagnostics.Silent then
-        logger:info("Scaffold " .. manifest.version .. " loaded. Combat is not implemented.")
+        logger:info("Glove knowledge " .. manifest.version .. " loaded. Action execution is not implemented.")
     end
     return app
 end
 
 return Main
+
