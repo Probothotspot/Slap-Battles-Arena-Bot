@@ -57,6 +57,12 @@ function Main.start(loadModule, manifest, diagnostics)
         cleanup:add(function() diagnostics:Destroy() end)
     end
     local inventory = systems.Perception.new(config.Arena)
+    local navigation = systems.Navigation.new({
+        Player = game:GetService("Players").LocalPlayer,
+        Options = config.Portal, Arena = config.Arena,
+    })
+    app.Navigation = navigation
+    cleanup:add(function() navigation:Destroy() end)
     app.GloveKnowledge = systems.GloveKnowledge
     app.CatalogStats = app.GloveKnowledge.stats()
     app.Status = "observing"
@@ -74,6 +80,8 @@ function Main.start(loadModule, manifest, diagnostics)
     local function refresh()
         app.Plan = app:GetCombatPlan()
         app.Glove = app.Snapshot.GloveName and app.GloveKnowledge.get(app.Snapshot.GloveName)
+        navigation:update(app.Snapshot)
+        app.NavigationStatus = navigation:getStatus()
         Gui.update(app.Gui, app)
     end
     local started, startError = pcall(function()
@@ -86,6 +94,7 @@ function Main.start(loadModule, manifest, diagnostics)
             elapsed = 0
             local refreshed, refreshError = pcall(refresh)
             if not refreshed then
+                navigation:stop("Ошибка наблюдения: движение остановлено")
                 heartbeat:Disconnect()
                 app.Status, app.LastError = "error", tostring(refreshError)
                 warn("[ArenaBot] Inventory observation failed: " .. app.LastError)
@@ -98,7 +107,7 @@ function Main.start(loadModule, manifest, diagnostics)
         error("[ArenaBot] Glove initialization failed: " .. tostring(startError))
     end
     if not diagnostics or not diagnostics.Silent then
-        logger:info("Glove knowledge " .. manifest.version .. " loaded. Action execution is not implemented.")
+        logger:info("Portal navigation " .. manifest.version .. " loaded. Combat execution is not implemented.")
     end
     return app
 end

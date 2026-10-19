@@ -90,12 +90,13 @@ function Gui.update(gui, app)
     body.Text = table.concat({
         "Состояние: " .. (states[snapshot.ArenaState] or "ожидание"),
         "Высота Y: " .. (snapshot.HeightY and string.format("%.2f", snapshot.HeightY) or "—"),
+        "Портал: " .. (app.NavigationStatus and app.NavigationStatus.Message or "ожидание"),
         "Перчатка: " .. (snapshot.GloveName or (snapshot.AmbiguousTools and "выбери инструмент" or "нет")),
         "Профиль: " .. (glove and (glove.Known and glove.Policy or "базовый (новая перчатка)") or "—"),
         "Каталог: " .. app.CatalogStats.Total .. " записей; особых профилей: " .. app.CatalogStats.Specialized,
         "", glove and glove.Hint or "Ожидание инструмента в инвентаре или руке.",
         "", "План: " .. plan.Reason,
-        "Выполнение движения и атак ещё не подключено.",
+        "Вход в портал включён. Бой ещё не подключён.",
     }, "\n")
 end
 

@@ -1,6 +1,6 @@
 return {
     schemaVersion = 1,
-    version = "0.2.0",
+    version = "0.3.0",
     entry = "main.lua",
     systems = {
         { name = "GloveKnowledge", path = "GloveKnowledge.lua" },
