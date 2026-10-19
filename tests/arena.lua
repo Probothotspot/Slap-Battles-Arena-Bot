@@ -138,7 +138,7 @@ local function rig()
     r.World=collisionWorld({part(V.new(0,-.5,0),V.new(100,1,100))})
     local function player(name,x)
         local root={Parent=true,Position=V.new(x,3,0),AssemblyLinearVelocity=V.zero,CollisionGroup="Default",IsA=function() return true end}
-        local h={Parent=true,Health=100,Move=function(_,d) r.Direction=d; r.Moves=r.Moves+1 end,EquipTool=function() end}
+        local h={Parent=true,Health=100,Move=function(_,d) r.Direction=d; r.Moves=r.Moves+1; if d.Magnitude==0 then r.ZeroMoves=(r.ZeroMoves or 0)+1 end end,EquipTool=function() end}
         local tool={Name="Default",Enabled=true,Activate=function() r.Activations=(r.Activations or 0)+1 end,Deactivate=function() end}
         local char={}
         function char:FindFirstChild(n) if n=="HumanoidRootPart" then return root end end
@@ -196,7 +196,9 @@ eq(r.DestroyedPaths,1,"Release a stale native path object")
 r=rig(); r:update(); for _=1,100 do r:step(); if r.Nav.Route then break end end
 r.Nav:stop(); r.Now=1; r:update(); for _=1,100 do r:step(); if r.Nav.Route then break end end
 r.EnemyRoot.Position=V.new(40,3,0); r.Now=2; r:update()
-eq(r.Nav.Job~=nil,true,"Moving target queues an endpoint refresh without cancelling the usable route")
+eq(r.Nav.Job,nil,"Target motion keeps a useful long route instead of rebuilding it")
+r:render(); r.Root.Position=V.new(10,3,0); r.Now=3; r:render(); r:update()
+eq(r.Nav.Job~=nil,true,"Refresh moving-target endpoint only near the end of the corridor")
 eq(r.Nav.Route~=nil,true,"Keep a validated route while its replacement computes")
 r=rig(); r:update(); for _=1,100 do r:step(); if r.Nav.Route then break end end
 r.World.Wall=true; r.Now=.2; r:render()
@@ -254,6 +256,87 @@ for tick=1,1500 do
 end
 eq(fell,false,"Integrated steering never steps into the island gap")
 eq(arrived,true,"Actual steering reaches the opposite island using angled and sloped boards")
+r.Nav:Destroy()
+
+-- At 16 studs/s and 30 updates/s, bridge progress must stay forward on a fixed route.
+r=rig(); r.World.Parts=parts; r.Root.Position=V.new(-10,3,0); r.EnemyRoot.Position=V.new(32,7,0)
+local bridgeBacksteps=0; local bridgeFrames=0; local processedFast=0; local fellFast=false; local fixedRoute; local routeChanges=0
+for tick=1,1200 do
+    r.Now=tick/30
+    if tick%6==1 then r:update() end
+    r:step()
+    while processedFast<#r.Queue do processedFast=processedFast+1; r.Queue[processedFast]() end
+    r:render()
+    if r.Nav.Route and r.Nav:_narrowCorridor() and r.Direction and r.Direction.Magnitude>0 then
+        bridgeFrames=bridgeFrames+1
+        fixedRoute=fixedRoute or r.Nav.Route
+        if r.Nav.Route~=fixedRoute then routeChanges=routeChanges+1 end
+        local edge=r.Nav.Route[r.Nav.Index].Position-r.Nav.Route[r.Nav.Index-1].Position
+        if r.Direction:Dot(V.new(edge.X,0,edge.Z))<-.01 then bridgeBacksteps=bridgeBacksteps+1 end
+    end
+    if r.Direction and r.Direction.Magnitude>0 then
+        local nextPosition=r.Root.Position+r.Direction*(16/30)
+        local support=r.World:Raycast(nextPosition+V.new(0,2,0),V.new(0,-10,0))
+        if not support then fellFast=true; break end
+        r.Root.Position=support.Position+V.new(0,3,0)
+    end
+    if r.Nav.Phase=="position" then break end
+end
+eq(routeChanges,0,"Keep one chosen route throughout the unchanged bridge")
+eq(bridgeFrames>10,true,"Exercise full-speed crossing, not only route generation")
+eq(bridgeBacksteps,0,"No backward steering toward passed plank waypoints at full walk speed")
+eq(fellFast,false,"Faster following retains gap protection")
+eq(r.Nav.Phase,"position","Full-speed crossing still reaches the opposite island")
+r.Nav:Destroy()
+
+-- Smooth traversal regressions: passed points, stable bridges, cheap invariant checks and no stop pulse.
+r=rig(); r:update(); for _=1,120 do r:step(); if r.Nav.Route then break end end
+local floor=r.World.Parts[1]
+local function node(x) return {Position=V.new(x,0,0),Part=floor,Pose=floor.CFrame,Size=floor.Size,
+    Supports={{Part=floor,Pose=floor.CFrame,Size=floor.Size}}} end
+r.Nav.Route={node(0),node(1),node(8),node(16)}; r.Nav.Index=2
+r.Root.Position=V.new(1.8,3,0); r.Now=.2; r:render()
+eq(r.Nav.Index>=3,true,"Skip an overshot waypoint instead of returning to it")
+eq(r.Direction.X>0,true,"No backward step after a slightly missed waypoint")
+r.Root.Position=V.new(3,3,0); r.Now=.4
+local beforeQueries=r.World.Queries; local beforeZeros=r.ZeroMoves or 0
+r:render()
+eq(r.World.Queries-beforeQueries<=4,true,"Unchanged edge needs only ground/change probes and one volume sweep")
+eq(r.ZeroMoves or 0,beforeZeros,"Safety check does not emit a stop command")
+-- A new route based on an origin less than AttachDistance behind us must still skip its old prefix.
+r.Nav.RefreshAllowed=true; r.Nav.RouteCost=nil
+local incoming={node(0),node(1),node(8),node(18)}
+local attached=coroutine.create(function() r.Nav:_accept(incoming,18,"test refresh",r.Nav.Generation) end)
+repeat r.Nav.SliceOps=0; r.Nav.SliceStart=r.Now; local ok,err=coroutine.resume(attached); assert(ok,err) until coroutine.status(attached)=="dead"
+eq(r.ZeroMoves or 0,beforeZeros,"Accepting a refreshed path never pulses Humanoid:Move(0)")
+r.Now=.6; r:render(); eq(r.Direction.X>0,true,"Attach refreshed route ahead even after moving less than the old five-stud threshold")
+local acceptedRoute=r.Nav.Route
+r.Nav.EngineBusy=true; r.Nav.EngineGeneration=r.Nav.Generation; r.Now=50; r:step()
+eq(r.Nav.Route,acceptedRoute,"A lingering alternative computation cannot time out an accepted valid route")
+r.Nav.EngineBusy=false; r.Nav:Destroy()
+
+r=rig(); r.World.Parts=parts; r.Root.Position=V.new(3,3,16); r.EnemyRoot.Position=V.new(32,7,0)
+r:update()
+-- Use a previously proved segment on the sloping plank to isolate route-retention behavior.
+local g=geometry(r.World)
+local start=g:project(V.new(3,0,16),1,3); local goal=g:project(V.new(19,4,16),1,3)
+local safe,proofs=g:segment(start.Position,goal.Position); assert(safe)
+goal.Supports=proofs; goal.Narrow=true
+r.Nav.Route={start,goal}; r.Nav.Index=2; r.Nav.Job=nil; r.Nav.PlanTarget=r.EnemyRoot.Position
+r.Nav.RefreshAllowed=false; r.Nav.Direction=V.new(1,0,0)
+local retained=r.Nav.Route; local plans=r.Nav.Plans
+for i=1,12 do
+    r.Now=i; r.EnemyRoot.Position=V.new(32+i,7,0); r:update()
+    eq(r.Nav.Route,retained,"Moving opponent cannot replace a still-valid bridge crossing")
+end
+eq(r.Nav.Plans,plans,"No repeated full path searches on an unchanged plank")
+local alternative=coroutine.create(function() r.Nav:_accept({start,goal},1,"late alternative",r.Nav.Generation) end)
+local ok,err=coroutine.resume(alternative); assert(ok,err)
+eq(r.Nav.Route,retained,"Late alternative planner cannot reset the chosen crossing")
+local originalSize=bridges[2].Size
+bridges[2].Size=V.new(2,1,2); r.Now=13; r:render()
+eq(r.Nav.Route,nil,"Changed board size invalidates its cached proof")
+bridges[2].Size=originalSize
 r.Nav:Destroy()
 
 -- Preview uses a bounded object pool, floor projection, animation, immediate toggle and cleanup.
