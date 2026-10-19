@@ -40,7 +40,7 @@ function Main.start(loadModule, manifest, diagnostics)
 
     env[key] = app
     local ok, err = pcall(function()
-        Gui.mount({
+        app.Gui = Gui.mount({
             App = app,
             Config = config,
             Cleanup = cleanup,
@@ -56,7 +56,9 @@ function Main.start(loadModule, manifest, diagnostics)
         app.Diagnostics = diagnostics
         cleanup:add(function() diagnostics:Destroy() end)
     end
-    logger:info("Scaffold " .. manifest.version .. " loaded. Combat is not implemented.")
+    if not diagnostics or not diagnostics.Silent then
+        logger:info("Scaffold " .. manifest.version .. " loaded. Combat is not implemented.")
+    end
     return app
 end
 
