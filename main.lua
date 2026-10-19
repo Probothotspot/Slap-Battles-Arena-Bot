@@ -19,11 +19,15 @@ function Main.start(loadModule, manifest, diagnostics)
     local inventory = systems.Perception.new(config.Arena)
     local stats = systems.SessionStats.new()
     local navigation = systems.Navigation.new({ Player = player, Options = config.Portal, Arena = config.Arena })
+    local pursuit = systems.ArenaNavigation.new({ Player=player, Options=config.Pursuit, Arena=config.Arena,
+        SurfaceRoutes=systems.SurfaceRoutes, Knowledge=systems.GloveKnowledge })
+    local preview = systems.PathPreview.new({Options=config.PathPreview})
+    local combat = systems.Combat.new({Options=config.Attack})
     local app = { Version = manifest.version, Config = config, Systems = systems,
         Adapter = adapter, Status = "paused", Destroyed = false, Running = false,
-        Navigation = navigation, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
+        Navigation = navigation, Pursuit=pursuit, Preview=preview, Combat=combat, PathVisible=false, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
     app.CatalogStats = app.GloveKnowledge.stats()
-    cleanup:add(function() navigation:Destroy() end)
+    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:stop() end)
 
     local counter, counterConnection, lifeCharacter, lifeHumanoid, diedConnection, childConnection
     local function readSlaps()
@@ -81,17 +85,43 @@ function Main.start(loadModule, manifest, diagnostics)
         stats:observe(app.Snapshot, navigation:getStatus())
         app.StatsView = stats:snapshot()
     end
+    local lastTarget,lastRoute,lastFailures
     local function refresh()
         sample()
         if app.Running then
             navigation:update(app.Snapshot)
+            pursuit:update(app.Snapshot)
+            local target=pursuit.Target
+            local targetCharacter=target and target.Character
+            local targetRoot=targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot and root and pursuit.Running and app.Snapshot.ArenaState=="arena" then
+                local tool=targetCharacter:FindFirstChildOfClass("Tool")
+                local observations={SlapRange=config.Attack.ConservativeRange,SlapReady=combat:ready(),
+                    Target={Alive=true,Distance=(root.Position-targetRoot.Position).Magnitude,
+                        LineOfSight=not game:GetService("Workspace"):Raycast(root.Position,targetRoot.Position-root.Position,pursuit.Params),
+                        Glove=tool and tool.Name,
+                        Invulnerable=targetCharacter:FindFirstChildOfClass("ForceField")~=nil},
+                    Ragdolled=pursuit.Humanoid.PlatformStand}
+                app.Plan=systems.Decision.plan(app.GloveKnowledge,app.Snapshot,observations)
+                combat:update(app.Snapshot,app.Plan,player.Character,pursuit,observations)
+            else combat:stop() end
+            app.AttackAttempts=combat.Attempts
             stats:observe(app.Snapshot, navigation:getStatus())
+        end
+        app.ArenaStatus=pursuit:getStatus()
+        if app.Running and app.Snapshot.ArenaState=="arena" then
+            local n=app.ArenaStatus
+            if n.Target and n.Target~="—" and n.Target~=lastTarget then stats:log("Цель: "..n.Target) end
+            if n.RouteSource and n.RouteSource~="—" and n.RouteSource~=lastRoute then stats:log("Маршрут: "..n.RouteSource) end
+            if n.Failures and n.Failures>(lastFailures or 0) then stats:log(n.Message) end
+            lastTarget,lastRoute,lastFailures=n.Target,n.RouteSource,n.Failures
         end
         app.NavigationStatus, app.StatsView = navigation:getStatus(), stats:snapshot()
         if app.Gui then Gui.update(app.Gui, app) end
     end
     local function fail(err)
-        navigation:stop("Ошибка: движение остановлено")
+        navigation:stop("Ошибка: движение остановлено"); pursuit:stop(); combat:stop(); preview:update({})
         stats:setRunning(false)
         app.Running, app.Status, app.LastError = false, "error", tostring(err)
         app.StatsView = stats:snapshot()
@@ -112,12 +142,18 @@ function Main.start(loadModule, manifest, diagnostics)
     function app:Stop()
         if self.Destroyed then return end
         if self.Running then pcall(sample) end
-        navigation:stop("Бот остановлен")
+        navigation:stop("Бот остановлен"); pursuit:stop(); combat:stop(); preview:update({})
         stats:setRunning(false)
         self.Running = false
         if self.Status ~= "error" then self.Status = "paused" end
+        self.ArenaStatus=pursuit:getStatus()
         self.NavigationStatus, self.StatsView = navigation:getStatus(), stats:snapshot()
         if self.Gui then pcall(Gui.update, self.Gui, self) end
+    end
+    function app:SetPathVisible(value)
+        if self.Destroyed then return end
+        self.PathVisible=value==true; preview:setEnabled(self.PathVisible)
+        if self.Gui then Gui.update(self.Gui,self) end
     end
     function app:Destroy()
         if self.Destroyed then return end
@@ -143,9 +179,21 @@ function Main.start(loadModule, manifest, diagnostics)
             cleanup:add(function() diagnostics:Destroy() end)
         end
         refresh()
-        local elapsed = 0
+        local elapsed,previewElapsed = 0,0
         cleanup:add(game:GetService("RunService").Heartbeat:Connect(function(dt)
             if app.Destroyed or app.Status == "error" then return end
+            if app.Running then
+                local good,problem=pcall(function()
+                    pursuit:step()
+                    previewElapsed=previewElapsed+dt
+                    if app.PathVisible and previewElapsed>=config.PathPreview.Interval then
+                        previewElapsed=0
+                        local nav=app.Snapshot.ArenaState=="lobby" and navigation or pursuit
+                        preview:update(nav:getRoute())
+                    end
+                end)
+                if not good then fail(problem); return end
+            end
             elapsed = elapsed + dt
             if elapsed < config.PerceptionInterval then return end
             elapsed = 0

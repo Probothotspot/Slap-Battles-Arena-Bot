@@ -77,15 +77,21 @@ function Gui.mount(context)
     local run = button(body,"RunToggle","Старт бота",UDim2.fromOffset(0,88),UDim2.new(1,0,0,44))
     run.BackgroundColor3 = rgb(255,255,255)
     local runGradient = gradient(run,{rgb(113,57,217),rgb(173,91,245),rgb(123,66,224)})
-    local tabBar = create("Frame", { Name = "Tabs", Position = UDim2.fromOffset(0,146),
+    run.Text=""
+    local runLabel=text(run,"RunLabel","Старт бота",0,0,1,44,15,nil,true)
+    runLabel.TextXAlignment=Enum.TextXAlignment.Center
+    run.ZIndex=2; runLabel.ZIndex=3
+    local showPath=button(body,"ShowPath","Показать путь: выкл",UDim2.fromOffset(0,138),UDim2.new(1,0,0,30))
+    showPath.TextSize=12
+    local tabBar = create("Frame", { Name = "Tabs", Position = UDim2.fromOffset(0,180),
         Size = UDim2.new(1,0,0,34), BackgroundTransparency = 1 }, body)
     local pages, tabs = {}, {}
     local labels = { "Обзор", "Статистика", "Журнал" }
     for i,name in ipairs({ "Overview", "Statistics", "Journal" }) do
         tabs[name] = button(tabBar,name.."Tab",labels[i],UDim2.new((i-1)/3,(i-1)*3,0,0),UDim2.new(1/3,-6,1,0))
         tabs[name].TextSize = 12
-        pages[name] = create("ScrollingFrame", { Name = name, Position = UDim2.fromOffset(0,194),
-            Size = UDim2.new(1,0,1,-194), BackgroundTransparency = 1, BorderSizePixel = 0,
+        pages[name] = create("ScrollingFrame", { Name = name, Position = UDim2.fromOffset(0,224),
+            Size = UDim2.new(1,0,1,-224), BackgroundTransparency = 1, BorderSizePixel = 0,
             ScrollBarThickness = 3, ScrollBarImageColor3 = rgb(167,112,241),
             Active = true,
             CanvasSize = UDim2.fromOffset(0,0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
@@ -101,7 +107,7 @@ function Gui.mount(context)
     local action = detail("Action","ТЕКУЩАЯ ЗАДАЧА",0,82)
     local glove = detail("Glove","ПЕРЧАТКА",92,65)
     local tactic = detail("Tactic","ТАКТИКА",167,100)
-    local notice = text(pages.Overview,"Notice","Бой на арене ещё не подключён.",4,278,1,36,11,rgb(173,150,198))
+    local notice = text(pages.Overview,"Notice","",4,278,1,96,11,rgb(173,150,198))
     notice.TextYAlignment = Enum.TextYAlignment.Top
     local statValues = {}
     local statLabels = {
@@ -121,7 +127,7 @@ function Gui.mount(context)
     local statNote = text(pages.Statistics,"StatsNote","",4,352,1,80,11,rgb(183,157,209))
     statNote.TextYAlignment = Enum.TextYAlignment.Top
     create("UIListLayout", { Padding = UDim.new(0,8), SortOrder = Enum.SortOrder.LayoutOrder },pages.Journal)
-    local view = { Frame=frame, Body=body, Scale=scale, Collapse=collapse, Run=run,
+    local view = { Frame=frame, Body=body, Scale=scale, Collapse=collapse, Run=runLabel, PathButton=showPath, Notice=notice,
         Subtitle=subtitle, Status=status, Location=location, Action=action, Glove=glove,
         Tactic=tactic, StatValues=statValues, StatNote=statNote, Pages=pages, Tabs=tabs,
         Selected="Overview", Collapsed=false, LogRevision=-1, LastRunning=nil, Placed=false }
@@ -157,6 +163,7 @@ function Gui.mount(context)
     cleanup:add(run.Activated:Connect(function()
         if app.Running then app:Stop() else app:Start() end
     end))
+    cleanup:add(showPath.Activated:Connect(function() app:SetPathVisible(not app.PathVisible) end))
     cleanup:add(close.Activated:Connect(function() app:Destroy() end))
     for name,control in pairs(tabs) do
         local selected=name
@@ -213,7 +220,11 @@ function Gui.update(gui,app)
     end
     v.Action.Text=app.LastError or (not app.Running and "Нажми «Старт бота», чтобы начать." or
         (s.ArenaState=="lobby" and app.NavigationStatus and app.NavigationStatus.Message) or
+        (s.ArenaState=="arena" and app.ArenaStatus and app.ArenaStatus.Message) or
         (app.Plan and app.Plan.Reason) or "Ожидание персонажа")
+    v.PathButton.Text="Показать путь: "..(app.PathVisible and "вкл" or "выкл")
+    local nav=app.ArenaStatus or {}
+    v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—").."\nПоисков: "..(nav.Plans or 0).." · Узлов: "..(nav.GraphNodes or 0).."\nАктиваций инструмента: "..(app.AttackAttempts or 0).." (это не подтверждённые попадания)."
     v.Glove.Text=s.GloveName or (s.AmbiguousTools and "Выбери инструмент в руках" or "Перчатки пока нет")
     v.Tactic.Text=app.Glove and app.Glove.Hint or "Тактика появится после получения перчатки."
     for key,label in pairs(v.StatValues) do

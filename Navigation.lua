@@ -1,4 +1,4 @@
--- Lobby portal walking only; arena movement and combat remain separate.
+-- Live lobby portal route with local obstacle/player avoidance and replanning.
 local Navigation = { Name = "Navigation", Ready = true }
 local function flat(v) return Vector3.new(v.X, 0, v.Z) end
 local function distance(a, b) return flat(a - b).Magnitude end
@@ -31,8 +31,9 @@ function Navigation.new(context)
         if self.Moving and self.Humanoid and self.Humanoid.Parent then
             pcall(function() self.Humanoid:Move(Vector3.zero, false) end)
         end
-        self.Moving, self.Target = false, nil
+        self.Moving, self.Target, self.LocalTarget = false, nil, nil
         if self.BlockedConnection then self.BlockedConnection:Disconnect(); self.BlockedConnection = nil end
+        if self.NativePath then self.NativePath:Destroy(); self.NativePath=nil end
     end
 
     function self:stop(message)
@@ -52,6 +53,21 @@ function Navigation.new(context)
             TotalAttempts = self.TotalAttempts, TotalFailures = self.TotalFailures }
     end
 
+    function self:getRoute()
+        if not self.Target or not self.Root or not self.Bound then return {} end
+        local points={self.Root.Position}
+        if self.LocalTarget then table.insert(points,self.LocalTarget) end
+        if self.Phase=="approach" then
+            for i=self.Index,#self.Route do table.insert(points,self.Route[i].Position) end
+            table.insert(points,self.Crossing)
+        else table.insert(points,self.Target) end
+        local result={}
+        for _,p in ipairs(points) do
+            local hit=world:Raycast(p+Vector3.new(0,2,0),Vector3.new(0,-options.GroundProbe,0),self:_params())
+            if hit and hit.Position then table.insert(result,hit.Position) else break end
+        end
+        return result
+    end
     function self:_portal()
         local object = world
         for _, name in ipairs(options.Path) do object = object and object:FindFirstChild(name) end
@@ -68,11 +84,16 @@ function Navigation.new(context)
 
     function self:_ground(point, params)
         local hit = world:Raycast(point + Vector3.new(0, 2, 0), Vector3.new(0, -options.GroundProbe, 0), params)
+        if hit and hit.Instance then
+            local model=hit.Instance:FindFirstAncestorOfClass("Model")
+            if model and model:FindFirstChildOfClass("Humanoid") then return false end
+        end
         return hit ~= nil and hit.Normal.Y >= 0.5
     end
 
     function self:_straightSafe(from, goal)
         local delta, params = flat(goal - from), self:_params()
+        if delta.Magnitude>45 then return false end
         if world:Raycast(from, delta, params) then return false end
         local count = math.max(1, math.ceil(delta.Magnitude / 2))
         for i = 0, count do
@@ -91,6 +112,17 @@ function Navigation.new(context)
         else self.Phase, self.RetryAt = "retry", now + options.RetryDelay end
     end
 
+    function self:_localClear(direction,length)
+        local params=self:_params()
+        local side=Vector3.new(-direction.Z,0,direction.X)
+        for _,offset in ipairs({Vector3.zero,side*.9,side*-.9}) do
+            if world:Raycast(self.Root.Position+offset,direction*length,params) then return false end
+        end
+        for i=1,3 do
+            if not self:_ground(self.Root.Position+direction*(length*i/3),params) then return false end
+        end
+        return true
+    end
     function self:_render()
         -- Recheck height every frame to avoid steering toward a stale lobby target.
         if self.Destroyed or player.Character ~= self.Character or not self.Root.Parent
@@ -106,7 +138,27 @@ function Navigation.new(context)
         end
         if self.Target then
             local delta = flat(self.Target - self.Root.Position)
-            self.Humanoid:Move(delta.Magnitude > 0.15 and delta.Unit or Vector3.zero, false)
+            local direction=delta.Magnitude>.15 and delta.Unit or Vector3.zero
+            local now=clock()
+            if not self.AvoidAt or now>=self.AvoidAt then
+                self.AvoidAt=now+.08; self.Steering=direction; self.LocalTarget=nil
+                local length=math.min(2.5,delta.Magnitude)
+                if length>.15 and not self:_localClear(direction,length) then
+                    local found=false
+                    for _,angle in ipairs({math.pi/3,-math.pi/3}) do
+                        local c,s=math.cos(angle),math.sin(angle)
+                        local candidate=Vector3.new(direction.X*c-direction.Z*s,0,direction.X*s+direction.Z*c)
+                        if self:_localClear(candidate,length) then
+                            self.Steering=candidate; self.LocalTarget=self.Root.Position+candidate*length; found=true; break
+                        end
+                    end
+                    if not found then
+                        self:_fail("Проход перекрыт — ищу новый путь",now)
+                        self.RetryAt=now+.25; return
+                    end
+                end
+            end
+            self.Humanoid:Move(self.Steering or direction, false)
             self.Moving = true
         end
     end
@@ -118,6 +170,7 @@ function Navigation.new(context)
     end
 
     function self:_start(now)
+        if self.EngineBusy then self.Message="Ожидаю завершения прошлого поиска"; return end
         self.TotalAttempts = self.TotalAttempts + 1
         self.Attempts = self.Attempts + 1
         self.Generation = self.Generation + 1
@@ -130,6 +183,7 @@ function Navigation.new(context)
         end
         self.Phase, self.Message, self.PathStarted = "path", "Строю путь к порталу", now
         local origin = self.Root.Position
+        self.EngineBusy=true
         spawn(function()
             local path
             local computed, waypoints = pcall(function()
@@ -139,10 +193,15 @@ function Navigation.new(context)
                 if path.Status ~= Enum.PathStatus.Success then return nil end
                 return path:GetWaypoints()
             end)
-            if self.Destroyed or self.Generation ~= generation or player.Character ~= self.Character then return end
+            self.EngineBusy=false
+            if self.Destroyed or self.Generation ~= generation or player.Character ~= self.Character then
+                if path then path:Destroy() end; return
+            end
             if not computed or type(waypoints) ~= "table" or #waypoints == 0 then
+                if path then path:Destroy() end
                 self:_fail("Путь к порталу недоступен — повторю подход", clock()); return
             end
+            self.NativePath=path
             self:_route(waypoints, clock())
             self.BlockedConnection = path.Blocked:Connect(function(index)
                 if not self.Destroyed and self.Generation == generation and index >= self.Index then
@@ -211,6 +270,7 @@ function Navigation.new(context)
                 end
             else
                 if self.BlockedConnection then self.BlockedConnection:Disconnect(); self.BlockedConnection = nil end
+                if self.NativePath then self.NativePath:Destroy(); self.NativePath=nil end
                 self.Phase, self.Message, self.EnterStarted = "enter", "Захожу в красный портал", now
                 self.Target, self.BestDistance, self.LastProgress = self.Crossing, math.huge, now
             end

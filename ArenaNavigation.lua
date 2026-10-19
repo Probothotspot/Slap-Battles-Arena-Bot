@@ -1,0 +1,361 @@
+-- Arena pursuit: one engine request in flight, cooperative surface A*, live stopping checks.
+local A={Name="ArenaNavigation",Ready=true}
+local function flat(v) return Vector3.new(v.X,0,v.Z) end
+local function distance(a,b) return flat(a-b).Magnitude end
+local function finite(v) return v and v.X==v.X and v.Y==v.Y and v.Z==v.Z and v.Magnitude<1e7 end
+local function playerRig(player,bounds)
+    local c=player.Character; local root=c and c:FindFirstChild("HumanoidRootPart")
+    local h=c and c:FindFirstChildOfClass("Humanoid")
+    if not root or not root:IsA("BasePart") or not h or h.Health<=0 or not finite(root.Position) then return nil end
+    local y=root.Position.Y
+    if y>=bounds.LobbyMinY and y<=bounds.LobbyMaxY then return nil end
+    return c,root,h
+end
+function A.new(context)
+    local world=context.Workspace or game:GetService("Workspace")
+    local players=context.Players or game:GetService("Players")
+    local run=context.RunService or game:GetService("RunService")
+    local pfs=context.PathfindingService or game:GetService("PathfindingService")
+    local clock,spawn=context.Clock or os.clock,context.Spawn or task.spawn
+    local o,bounds,player,S=context.Options,context.Arena,context.Player,context.SurfaceRoutes
+    local self={Generation=0,Running=false,Destroyed=false,Phase="waiting",Message="Ожидание арены",
+        NextPlan=0,NextSelect=0,Plans=0,Failures=0,GraphNodes=0,Expanded=0,
+        LastSliceWork=0,PeakSliceWork=0,RouteSource="—",TargetName="—",Direction=Vector3.zero}
+    local bindName="ArenaBotPursuit"
+    function self:_release()
+        self.Direction=Vector3.zero; self.LocalTarget=nil
+        if (self.Running or self.Bound) and self.Humanoid and self.Humanoid.Parent then self.Humanoid:Move(Vector3.zero,false) end
+    end
+    function self:_clearPath()
+        self.Route=nil; self.Index=1; self.RouteCost=nil
+        if self.Blocked then self.Blocked:Disconnect(); self.Blocked=nil end
+        if self.Path then self.Path:Destroy(); self.Path=nil end
+        self:_release()
+    end
+    function self:_dropPending()
+        if self.PendingPath and self.PendingPath~=self.Path then self.PendingPath:Destroy() end
+        if self.EngineCandidate and self.EngineCandidate.Path then self.EngineCandidate.Path:Destroy() end
+        self.PendingPath=nil
+    end
+    function self:stop(message)
+        self.Generation=self.Generation+1; self.Running=false
+        self:_dropPending()
+        self.Job=nil; self.EngineCandidate=nil; self.ValidationJob=nil; self.Cache=nil
+        self.Target=nil; self.TargetCharacter=nil; self.TargetName="—"
+        self:_clearPath()
+        if self.Bound then run:UnbindFromRenderStep(bindName); self.Bound=false end
+        self.Phase,self.Message="waiting",message or "Движение остановлено"
+        self.NextPlan=0; self.PlanTarget=nil; self.PlanStarted=nil; self.AttemptFinished=true
+    end
+    function self:Destroy() if not self.Destroyed then self:stop(); self.Destroyed=true end end
+    function self:getRoute()
+        if not self.Running or not self.Route or not self.Root then return {} end
+        local ground=self:_geometry():project(self.Root.Position,1,8)
+        if not ground then return {} end
+        local points={ground.Position}
+        if self.LocalTarget then table.insert(points,self.LocalTarget) end
+        for i=self.Index,#self.Route do table.insert(points,self.Route[i].Position) end
+        return points
+    end
+    function self:getStatus()
+        return {Phase=self.Phase,Message=self.Message,Target=self.TargetName,RouteSource=self.RouteSource,
+            Plans=self.Plans,Failures=self.Failures,GraphNodes=self.GraphNodes,Expanded=self.Expanded,
+            SliceWork=self.LastSliceWork,PeakSliceWork=self.PeakSliceWork,
+            Waypoints=self.Route and #self.Route or 0,Waypoint=self.Index or 0,Planning=self.Job~=nil or self.EngineBusy}
+    end
+    function self:_params()
+        local exclude={}
+        for _,p in ipairs(players:GetPlayers()) do if p.Character then table.insert(exclude,p.Character) end end
+        local params=RaycastParams.new(); params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances=exclude; params.RespectCanCollide=true
+        params.CollisionGroup=self.Root.CollisionGroup
+        return params,exclude
+    end
+    function self:_geometry(checkpoint,params,bodyParams)
+        return S.new({Workspace=world,Options=o,Params=params or self.Params,BodyParams=bodyParams,Checkpoint=checkpoint})
+    end
+    function self:_checkpoint()
+        if self.SliceOps>=o.WorkPerFrame or clock()-self.SliceStart>=o.BudgetSeconds then coroutine.yield() end
+        self.SliceOps=self.SliceOps+1
+    end
+    function self:_targetValid(p)
+        local c,r,h=playerRig(p,bounds)
+        if not c or h.PlatformStand or h.Sit or c:FindFirstChildOfClass("ForceField") then return nil end
+        if distance(self.Root.Position,r.Position)>o.TargetRadius then return nil end
+        if context.Knowledge then
+            local tool=c:FindFirstChildOfClass("Tool")
+            if tool and context.Knowledge.get(tool.Name).Policy=="spectator" then return nil end
+        end
+        return c,r,h
+    end
+    function self:_select(now)
+        if now<self.NextSelect and self.Target and self.Target.Character==self.TargetCharacter and self:_targetValid(self.Target) then return end
+        self.NextSelect=now+o.SelectInterval
+        local best,bestScore=nil,math.huge
+        for _,p in ipairs(players:GetPlayers()) do
+            if p~=player then
+                local _,r=self:_targetValid(p)
+                if r and now>=(self.Unreachable and self.Unreachable[p] or 0) then
+                    local score=distance(self.Root.Position,r.Position)+math.abs(self.Root.Position.Y-r.Position.Y)*1.5
+                    -- Keep a useful route instead of oscillating between similar players.
+                    if p==self.Target then score=score*o.TargetHysteresis end
+                    if score<bestScore then best,bestScore=p,score end
+                end
+            end
+        end
+        if best~=self.Target or (best and best.Character~=self.TargetCharacter) then
+            self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
+            self:_clearPath(); self.NextPlan=now
+            self.Target=best; self.TargetCharacter=best and best.Character
+            self.TargetName=best and best.Name or "—"
+        end
+    end
+    function self:_accept(route,cost,source,generation,path)
+        if self.Destroyed or not self.Running or generation~=self.Generation or not self.Target
+            or self.Target.Character~=self.TargetCharacter then if path then path:Destroy() end; return end
+        if not route or #route<2 then if path then path:Destroy() end; return end
+        -- A useful old route may keep the character moving during a refresh. Attach the
+        -- new result to its nearest reachable future node rather than teleporting back to its origin.
+        if distance(route[1].Position,self.Root.Position)>o.AttachDistance then
+            local geom=self:_geometry(function() self:_checkpoint() end)
+            local ground=geom:project(self.Root.Position,1,8)
+            local best,bestDistance=nil,o.AttachDistance
+            if ground then
+                for i=2,#route do
+                    self:_checkpoint()
+                    local d=(ground.Position-route[i].Position).Magnitude
+                    if d<bestDistance and geom:segment(ground.Position,route[i].Position) then best,bestDistance=i,d end
+                end
+            end
+            if not best then if path then path:Destroy() end; return end
+            local attached={ground}; for i=best,#route do table.insert(attached,route[i]) end
+            route=attached
+        end
+        if self.Route and self.RouteCost and cost>=self.RouteCost*.95 then if path then path:Destroy() end; return end
+        self:_clearPath()
+        self.Route,self.RouteCost,self.Index,self.Path=route,cost,2,path
+        self.RouteSource,self.LastProgress,self.BestDistance=source,clock(),math.huge
+        self.Phase,self.Message="pursuit","Иду к "..self.TargetName.." · "..source
+        if path then
+            self.Blocked=path.Blocked:Connect(function(index)
+                local current=self.Route and self.Route[self.Index]
+                if self.Running and self.Path==path and index>=(current and current.EngineIndex or self.Index) then self:_invalidate("Путь перекрыт") end
+            end)
+        end
+    end
+    function self:_invalidate(message)
+        self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
+        self.Cache=nil; self.PlanTarget=nil; self.PlanStarted=nil; self.AttemptFinished=true
+        self:_clearPath(); self.NextPlan=clock()+o.MinReplanInterval
+        self.Phase,self.Message="replan",message.." — ищу обход"
+    end
+    function self:_goals(geometry,targetRoot)
+        local v=flat(targetRoot.AssemblyLinearVelocity or Vector3.zero)
+        local lead=v*o.PredictionSeconds
+        if lead.Magnitude>o.MaxPrediction then lead=lead.Unit*o.MaxPrediction end
+        local predicted=targetRoot.Position+lead
+        -- A led position over empty space is discarded, never used as a blind destination.
+        local ground=geometry:project(predicted,2,10) or geometry:project(targetRoot.Position,2,10)
+        if not ground then return {} end
+        local dir=flat(self.Root.Position-ground.Position)
+        dir=dir.Magnitude>.01 and dir.Unit or Vector3.new(1,0,0)
+        local result={}
+        for _,angle in ipairs({0,math.pi/3,-math.pi/3,2*math.pi/3,-2*math.pi/3}) do
+            local c,s=math.cos(angle),math.sin(angle)
+            local offset=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)*o.DesiredDistance
+            local goal=geometry:project(ground.Position+offset,2,5)
+            if goal and math.abs(goal.Position.Y-ground.Position.Y)<3 then table.insert(result,goal) end
+        end
+        return result
+    end
+    function self:_request(now,targetRoot)
+        if self.Job or self.ValidationJob or self.EngineCandidate or now<self.NextPlan then return end
+        self.NextPlan=now+o.MinReplanInterval; self.Plans=self.Plans+1
+        self.Generation=self.Generation+1; local generation=self.Generation
+        self.PlanTarget=targetRoot.Position; self.PlanStarted=now; self.RouteCost=nil; self.AttemptFinished=false
+        local origin=self.Root.Position; local params,exclude=self:_params(); self.Params=params
+        local function checkpoint() self:_checkpoint() end
+        self.Job=coroutine.create(function()
+            local geom=self:_geometry(checkpoint,params)
+            local start=geom:project(origin,2,10); if not start then return end
+            local goals=self:_goals(geom,targetRoot); if #goals==0 then return end
+            local best,bestCost
+            for _,goal in ipairs(goals) do
+                if geom:segment(start.Position,goal.Position) then
+                    local cost=(goal.Position-start.Position).Magnitude
+                    if not bestCost or cost<bestCost then best,bestCost={start,goal},cost end
+                end
+            end
+            if best then self:_accept(best,bestCost,"прямой проверенный",generation); return end
+            -- Engine planning yields outside this coroutine; at most one ComputeAsync in flight.
+            if not self.EngineBusy then
+            self.EngineBusy=true; self.EngineStarted=clock(); self.EngineGeneration=generation
+            spawn(function()
+                local path
+                local ok,points=pcall(function()
+                    path=pfs:CreatePath({AgentRadius=math.ceil(o.BodyRadius),AgentHeight=math.ceil(o.BodyHeight+1),
+                        AgentCanJump=false,AgentCanClimb=false,WaypointSpacing=3})
+                    path:ComputeAsync(origin,goals[1].Position)
+                    if path.Status==Enum.PathStatus.Success then return path:GetWaypoints() end
+                end)
+                self.EngineBusy=false
+                if self.Destroyed or not self.Running or generation~=self.Generation then if path then path:Destroy() end; return end
+                if ok and points and #points>1 then
+                    self.EngineCandidate={Points=points,Path=path,Generation=generation,Start=start}
+                elseif path then path:Destroy() end
+            end)
+            end
+            local parts
+            local cache=self.Cache
+            if cache and clock()-cache.Time<o.CacheSeconds and distance(cache.Origin,origin)<o.CacheDistance then
+                parts=cache.Parts
+            else
+                local overlap=OverlapParams.new(); overlap.FilterType=Enum.RaycastFilterType.Exclude
+                overlap.FilterDescendantsInstances=exclude; overlap.MaxParts=o.MaxParts; overlap.RespectCanCollide=true
+                overlap.CollisionGroup=self.Root.CollisionGroup
+                checkpoint(); parts=world:GetPartBoundsInRadius(origin,o.ScanRadius,overlap)
+                self.Cache={Parts=parts,Origin=origin,Time=clock()}
+            end
+            local route,cost,info=geom:build(parts,start.Position,goals)
+            if info then self.GraphNodes,self.Expanded=info.Nodes,info.Expanded end
+            if route then self:_accept(route,cost,"поверхности A*",generation) end
+        end)
+        if not self.Route then self.Phase,self.Message="planning","Ищу безопасный путь к "..self.TargetName end
+    end
+    function self:_work(now)
+        if self.Phase=="position" then return end
+        if self.PlanStarted and now-self.PlanStarted>o.PlanTimeout and (self.Job or self.ValidationJob or (self.EngineBusy and self.EngineGeneration==self.Generation)) then
+            self.Failures=self.Failures+1; self:_invalidate("Истекло время поиска"); return
+        end
+        self.SliceOps,self.SliceStart=0,clock()
+        if self.EngineCandidate then
+            local candidate=self.EngineCandidate; self.EngineCandidate=nil
+            self.ValidationJob=coroutine.create(function()
+                local geom=self:_geometry(function() self:_checkpoint() end)
+                local route={candidate.Start}; local cost=0
+                for i,point in ipairs(candidate.Points) do
+                    local node=geom:project(point.Position,3,8)
+                    if not node then candidate.Path:Destroy(); return end
+                    node.EngineIndex=i
+                    if (node.Position-route[#route].Position).Magnitude>.1 then
+                        cost=cost+(node.Position-route[#route].Position).Magnitude; table.insert(route,node)
+                    end
+                end
+                if geom:validate(route) then self:_accept(route,cost,"Roblox path",candidate.Generation,candidate.Path)
+                else candidate.Path:Destroy() end
+            end)
+            -- Keep ownership even if validation is cancelled.
+            self.PendingPath=candidate.Path
+        end
+        local job=self.ValidationJob or self.Job
+        if job then
+            local ok,err=coroutine.resume(job)
+            if not ok then
+                self.Failures=self.Failures+1; self.LastError=tostring(err)
+                self:_invalidate("Ошибка расчёта маршрута")
+            elseif coroutine.status(job)=="dead" then
+                if job==self.ValidationJob then self.ValidationJob=nil; self.PendingPath=nil else self.Job=nil end
+            end
+        end
+        self.LastSliceWork=self.SliceOps; self.PeakSliceWork=math.max(self.PeakSliceWork,self.SliceOps)
+        if self.PlanStarted and not self.AttemptFinished and not self.Job and not self.ValidationJob and (not self.EngineBusy or self.EngineGeneration~=self.Generation) and not self.EngineCandidate and not self.Route then
+            self.AttemptFinished=true
+            if self.Target then
+                self.Unreachable=self.Unreachable or {}; self.Unreachable[self.Target]=now+o.UnreachableCooldown
+            end
+            self.Message="Безопасный путь не найден — проверяю другие цели"; self.NextSelect=0
+            self.NextPlan=math.max(self.NextPlan,now+o.RetryDelay)
+        end
+    end
+    function self:_safety(now)
+        if not self.Route then self:_release(); return end
+        local root,h=self.Root,self.Humanoid
+        local body=RaycastParams.new(); body.FilterType=Enum.RaycastFilterType.Exclude
+        body.FilterDescendantsInstances={self.Character}; body.RespectCanCollide=true; body.CollisionGroup=self.Root.CollisionGroup
+        local geom=self:_geometry(nil,nil,body)
+        local start=geom:project(root.Position,1,8)
+        if not start or math.abs((root.AssemblyLinearVelocity or Vector3.zero).Y)>o.MaxVerticalSpeed then self:_release(); return end
+        local point=self.Route[self.Index]
+        while point and distance(root.Position,point.Position)<=o.WaypointReach and math.abs(start.Position.Y-point.Position.Y)<1.5 do
+            self.Index=self.Index+1; self.BestDistance,self.LastProgress=math.huge,now; point=self.Route[self.Index]
+        end
+        if not point then self.AttemptFinished=true; self:_clearPath(); self.Phase,self.Message="position","Держу дистанцию от "..self.TargetName; return end
+        if point.Part and (not point.Part.Parent or not point.Part.CanCollide or point.Pose~=point.Part.CFrame) then
+            self:_invalidate("Опора изменилась"); return
+        end
+        local delta=point.Position-start.Position; local d=flat(delta).Magnitude
+        local look=start.Position+delta*(math.min(o.LookAhead,d)/math.max(d,.001))
+        self.LocalTarget=nil
+        if not geom:segment(start.Position,look) then
+            local found=false
+            local direction=flat(delta).Unit
+            for _,angle in ipairs({math.pi/3,-math.pi/3}) do
+                local c,s=math.cos(angle),math.sin(angle)
+                local alternate=Vector3.new(direction.X*c-direction.Z*s,0,direction.X*s+direction.Z*c)
+                local node=geom:project(start.Position+alternate*o.LookAhead,2,5)
+                if node and geom:segment(start.Position,node.Position) then
+                    delta=node.Position-start.Position; self.LocalTarget=node.Position; found=true; break
+                end
+            end
+            if not found then self:_invalidate("Впереди препятствие или край"); return end
+        end
+        if d+.15<self.BestDistance then self.BestDistance,self.LastProgress=d,now end
+        if now-self.LastProgress>o.StuckSeconds then self.Failures=self.Failures+1; self:_invalidate("Нет продвижения"); return end
+        self.Direction=d>.1 and flat(delta).Unit or Vector3.zero
+        self.CheckedAt=now
+    end
+    function self:_render()
+        local now=clock()
+        if self.Destroyed or not self.Running or player.Character~=self.Character then self:stop(); return end
+        local _,root,h=playerRig(player,bounds)
+        if root~=self.Root or not h or h.Sit or h.PlatformStand then self:_release(); return end
+        if not self.Target or not self:_targetValid(self.Target) or self.Target.Character~=self.TargetCharacter then self:_release(); return end
+        if not self.CheckedAt or now-self.CheckedAt>o.CheckInterval then
+            self.CheckedAt=now
+            local ok,err=pcall(function() self:_safety(now) end)
+            if not ok then self.LastError=tostring(err); self:_invalidate("Не удалось проверить опору"); return end
+        end
+        if not self.Route or now-(self.CheckedAt or 0)>o.CheckInterval*2 then self.Direction=Vector3.zero end
+        h:Move(self.Direction,false)
+    end
+    function self:update(snapshot,now)
+        if self.Destroyed then return end
+        now=now or clock()
+        if not o.Enabled or not snapshot.Alive or snapshot.ArenaState~="arena" then self:stop(); return end
+        local character,root,h=playerRig(player,bounds)
+        if not character or h.Sit or h.PlatformStand then self:stop("Ожидание управления персонажем"); return end
+        if self.Character~=character then self:stop(); self.Character=character end
+        self.Root,self.Humanoid,self.Running=root,h,true
+        self.Params=self:_params()
+        if not self.Bound then
+            self.Bound=true; run:BindToRenderStep(bindName,Enum.RenderPriority.Input.Value+1,function() self:_render() end)
+        end
+        if not snapshot.Tool or snapshot.AmbiguousTools then self:stop("Арена: выбери перчатку"); return end
+        local profile=context.Knowledge and context.Knowledge.get(snapshot.GloveName)
+        if profile and not profile.CanSlap then self:stop("Этой перчатке нужен отдельный контроллер"); return end
+        if not snapshot.EquippedTool then h:EquipTool(snapshot.Tool) end
+        self:_select(now)
+        if not self.Target then self:_release(); self.Phase,self.Message="search","Ищу живого игрока на арене"; return end
+        local _,targetRoot=self:_targetValid(self.Target)
+        if not targetRoot then self:_release(); return end
+        -- Finish the bounded current search even while the target moves. Cancelling it on
+        -- every position update would starve bridge searches; the next request refreshes its endpoint.
+        if self.PlanTarget and distance(self.PlanTarget,targetRoot.Position)>o.StaleTargetDistance then
+            self.Message="Цель движется — обновляю точку подхода"
+        end
+        local d=distance(root.Position,targetRoot.Position)
+        if d>=o.HoldMin and d<=o.HoldMax and math.abs(root.Position.Y-targetRoot.Position.Y)<3
+            and not world:Raycast(root.Position,targetRoot.Position-root.Position,self.Params) then
+            self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
+            self.AttemptFinished=true; self:_clearPath(); self.Message="Держу дистанцию от "..self.TargetName; self.Phase="position"
+        else
+            local moved=not self.PlanTarget or distance(self.PlanTarget,targetRoot.Position)>o.TargetReplanDistance
+            if not self.Route or moved then self:_request(now,targetRoot) end
+        end
+    end
+    function self:step()
+        if not self.Destroyed and self.Running then self:_work(clock()) end
+    end
+    return self
+end
+return A
