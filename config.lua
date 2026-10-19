@@ -1,4 +1,4 @@
--- Lobby portal walking is enabled; automatic combat is still disabled.
+-- Start/Stop controls lobby walking; combat is still disabled.
 return {
     Debug = false,
     AutoStart = false,
@@ -12,6 +12,6 @@ return {
         StuckTimeout = 3, PathTimeout = 5, EnterTimeout = 4, VerifyTimeout = 2,
         MaxAttempts = 3, RetryDelay = 1.5, FailureCooldown = 8,
     },
-    UI = { Width = 360, Height = 370 },
+    UI = { Width = 480, Height = 590 },
 }
 

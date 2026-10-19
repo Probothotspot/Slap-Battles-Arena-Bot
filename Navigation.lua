@@ -23,7 +23,8 @@ function Navigation.new(context)
     local spawn, clock = context.Spawn or task.spawn, context.Clock or os.clock
     local bindName = "ArenaBotLobbyPortal"
     local self = { Phase = "waiting", Message = "Ожидание персонажа", Attempts = 0,
-        Generation = 0, Destroyed = false, Moving = false, Bound = false }
+        Generation = 0, Destroyed = false, Moving = false, Bound = false,
+        TotalAttempts = 0, TotalFailures = 0 }
 
     function self:_halt()
         if self.Bound then runService:UnbindFromRenderStep(bindName); self.Bound = false end
@@ -47,7 +48,8 @@ function Navigation.new(context)
     end
 
     function self:getStatus()
-        return { Phase = self.Phase, Message = self.Message, Attempts = self.Attempts }
+        return { Phase = self.Phase, Message = self.Message, Attempts = self.Attempts,
+            TotalAttempts = self.TotalAttempts, TotalFailures = self.TotalFailures }
     end
 
     function self:_portal()
@@ -80,6 +82,7 @@ function Navigation.new(context)
     end
 
     function self:_fail(message, now)
+        self.TotalFailures = self.TotalFailures + 1
         self.Generation = self.Generation + 1
         self:_halt()
         self.Message = message
@@ -115,6 +118,7 @@ function Navigation.new(context)
     end
 
     function self:_start(now)
+        self.TotalAttempts = self.TotalAttempts + 1
         self.Attempts = self.Attempts + 1
         self.Generation = self.Generation + 1
         local generation = self.Generation

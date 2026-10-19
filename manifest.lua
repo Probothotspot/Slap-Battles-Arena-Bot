@@ -1,8 +1,9 @@
 return {
     schemaVersion = 1,
-    version = "0.3.0",
+    version = "0.4.0",
     entry = "main.lua",
     systems = {
+        { name = "SessionStats", path = "SessionStats.lua" },
         { name = "GloveKnowledge", path = "GloveKnowledge.lua" },
         { name = "Perception", path = "Perception.lua" },
         { name = "Decision", path = "Decision.lua" },
