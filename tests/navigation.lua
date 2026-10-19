@@ -147,6 +147,10 @@ eq(r.nav.Bound,false)
 r=rig(); r.wall=true; r:update(0); local late=r.queued[1]
 r:update(5.2); eq(r.nav.Phase,"retry","Path timeout")
 late(); eq(r.nav.Phase,"retry","Timed-out result ignored")
+r=rig(); r.wall=true; r:update(0); local pausedResult=r.queued[1]
+r.nav:stop("paused"); pausedResult()
+eq(r.nav.Phase,"waiting","Late path result cannot resume a stopped bot")
+eq(r.nav.Bound,false)
 r=rig(); r.wall=true; r:update(0)
 r.pathPoints={{Position=r.root.Position,Action="jump"},{Position=r.nav.Approach}}
 r.queued[1](); r:update(.2)
