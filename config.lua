@@ -27,7 +27,12 @@ return {
         LookAhead=2, CheckInterval=.08, WaypointReach=.65, EndpointRefreshDistance=10, PassedPointCorridor=.6, CachedCorridor=.35,
         MaxVerticalSpeed=12, StuckSeconds=2, AttachDistance=5,
     },
-    Attack = { Enabled=true, ConservativeRange=4.5, Interval=.8 },
+    Attack = {
+        Enabled=true, ConservativeRange=4.5, Interval=.8,
+        TurnRate=9, FacingTolerance=math.rad(18), FacePadding=3,
+        RecoveryPadding=1.2, ActivationSeconds=.12, ConfirmationWindow=2,
+        GloveProfiles={Default={Range=4.5,Interval=.8,Verified=false}},
+    },
     PathPreview = { MaxSteps=48, Spacing=2, Interval=.1 },
     UI = { Width = 480, Height = 590 },
 }

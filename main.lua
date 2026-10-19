@@ -5,7 +5,7 @@ function Main.start(loadModule, manifest, diagnostics)
     local Cleanup = loadModule("Cleanup.lua")
     local Logger = loadModule("Logger.lua")
     local Gui = loadModule("Gui.lua")
-    local adapter = loadModule("SlapBattles.lua")
+    local Adapter = loadModule("SlapBattles.lua")
     local systems = {}
     for _, entry in ipairs(manifest.systems) do systems[entry.name] = loadModule(entry.path) end
     local env = type(getgenv) == "function" and getgenv() or _G
@@ -14,6 +14,7 @@ function Main.start(loadModule, manifest, diagnostics)
     if type(previous) == "table" and type(previous.Destroy) == "function" then previous:Destroy() end
 
     local player = game:GetService("Players").LocalPlayer
+    local adapter = Adapter.new({Player=player})
     local cleanup = Cleanup.new()
     local logger = Logger.new(config.Debug)
     local inventory = systems.Perception.new(config.Arena)
@@ -22,12 +23,14 @@ function Main.start(loadModule, manifest, diagnostics)
     local pursuit = systems.ArenaNavigation.new({ Player=player, Options=config.Pursuit, Arena=config.Arena,
         SurfaceRoutes=systems.SurfaceRoutes, Knowledge=systems.GloveKnowledge })
     local preview = systems.PathPreview.new({Options=config.PathPreview})
-    local combat = systems.Combat.new({Options=config.Attack})
+    local combat = systems.Combat.new({Options=config.Attack,Adapter=adapter,Player=player,Arena=config.Arena,
+        Knowledge=systems.GloveKnowledge,Log=function(message) stats:log(message) end})
+    pursuit.Combat=combat
     local app = { Version = manifest.version, Config = config, Systems = systems,
         Adapter = adapter, Status = "paused", Destroyed = false, Running = false,
         Navigation = navigation, Pursuit=pursuit, Preview=preview, Combat=combat, PathVisible=false, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
     app.CatalogStats = app.GloveKnowledge.stats()
-    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:stop() end)
+    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:Destroy(); adapter:Destroy() end)
 
     local counter, counterConnection, lifeCharacter, lifeHumanoid, diedConnection, childConnection
     local function readSlaps()
@@ -88,6 +91,7 @@ function Main.start(loadModule, manifest, diagnostics)
     local lastTarget,lastRoute,lastFailures
     local function refresh()
         sample()
+        combat.CurrentProfile=app.Snapshot.Tool and combat:profile(app.Snapshot.Tool) or nil
         if app.Running then
             navigation:update(app.Snapshot)
             pursuit:update(app.Snapshot)
@@ -97,7 +101,8 @@ function Main.start(loadModule, manifest, diagnostics)
             local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
             if targetRoot and root and pursuit.Running and app.Snapshot.ArenaState=="arena" then
                 local tool=targetCharacter:FindFirstChildOfClass("Tool")
-                local observations={SlapRange=config.Attack.ConservativeRange,SlapReady=combat:ready(),
+                local profile=combat:profile(app.Snapshot.Tool)
+                local observations={SlapRange=profile.Range,SlapReady=combat:ready() and app.Snapshot.Tool.Enabled~=false,
                     Target={Alive=true,Distance=(root.Position-targetRoot.Position).Magnitude,
                         LineOfSight=not game:GetService("Workspace"):Raycast(root.Position,targetRoot.Position-root.Position,pursuit.Params),
                         Glove=tool and tool.Name,
@@ -109,6 +114,7 @@ function Main.start(loadModule, manifest, diagnostics)
             app.AttackAttempts=combat.Attempts
             stats:observe(app.Snapshot, navigation:getStatus())
         end
+        app.CombatView=combat:snapshot()
         app.ArenaStatus=pursuit:getStatus()
         if app.Running and app.Snapshot.ArenaState=="arena" then
             local n=app.ArenaStatus
@@ -146,9 +152,28 @@ function Main.start(loadModule, manifest, diagnostics)
         stats:setRunning(false)
         self.Running = false
         if self.Status ~= "error" then self.Status = "paused" end
+        self.CombatView=combat:snapshot()
         self.ArenaStatus=pursuit:getStatus()
         self.NavigationStatus, self.StatsView = navigation:getStatus(), stats:snapshot()
         if self.Gui then pcall(Gui.update, self.Gui, self) end
+    end
+    function app:SetCombatTuning(range,interval)
+        if self.Destroyed then return false end
+        if type(range)~="number" or range~=range or range<1 or range>40
+            or type(interval)~="number" or interval~=interval or interval<.15 or interval>30 then return false end
+        local tool=self.Snapshot and self.Snapshot.Tool
+        local name=tool and tool.Name or "Default"
+        config.Attack.GloveProfiles[name]={Range=range,Interval=interval,Verified=false}
+        stats:log("Настройки боя: "..name..", дистанция "..range..", интервал "..interval.." с")
+        refresh(); return true
+    end
+    function app:BindHitConfirmation(signal,decode)
+        if self.Destroyed then return false end
+        adapter:bindHitFeed(signal,decode,function(payload) combat:confirm(payload) end)
+        self.CombatView=combat:snapshot()
+        stats:log("Подключён адаптер подтверждений попаданий")
+        if self.Gui then Gui.update(self.Gui,self) end
+        return true
     end
     function app:SetPathVisible(value)
         if self.Destroyed then return end
@@ -184,6 +209,7 @@ function Main.start(loadModule, manifest, diagnostics)
             if app.Destroyed or app.Status == "error" then return end
             if app.Running then
                 local good,problem=pcall(function()
+                    combat:step(dt)
                     pursuit:step()
                     previewElapsed=previewElapsed+dt
                     if app.PathVisible and previewElapsed>=config.PathPreview.Interval then

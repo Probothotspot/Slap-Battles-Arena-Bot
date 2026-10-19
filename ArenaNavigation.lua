@@ -236,7 +236,7 @@ function A.new(context)
         local result={}
         for _,angle in ipairs({0,math.pi/3,-math.pi/3,2*math.pi/3,-2*math.pi/3}) do
             local c,s=math.cos(angle),math.sin(angle)
-            local offset=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)*o.DesiredDistance
+            local offset=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)*(self.CombatIntent and self.CombatIntent.DesiredDistance or o.DesiredDistance)
             local goal=geometry:project(ground.Position+offset,2,5)
             if goal and math.abs(goal.Position.Y-ground.Position.Y)<3 then table.insert(result,goal) end
         end
@@ -248,6 +248,7 @@ function A.new(context)
         self.Generation=self.Generation+1; local generation=self.Generation
         self.PlanTarget=targetRoot.Position; self.PlanStarted=now; self.RouteCost=nil; self.AttemptFinished=false
         self.RefreshAllowed=self.Route~=nil
+        self.PlanStance=self.CombatIntent and self.CombatIntent.Stance
         local origin=self.Root.Position; local params,exclude=self:_params(); self.Params=params
         local function checkpoint() self:_checkpoint() end
         self.Job=coroutine.create(function()
@@ -301,7 +302,7 @@ function A.new(context)
         if not self.Route then self.Phase,self.Message="planning","Ищу безопасный путь к "..self.TargetName end
     end
     function self:_work(now)
-        if self.Phase=="position" then return end
+        if self.Phase=="position" and not self.Job and not self.ValidationJob and not self.EngineCandidate then return end
         if self.PlanStarted and now-self.PlanStarted>o.PlanTimeout and (self.Job or self.ValidationJob or (self.EngineBusy and self.EngineGeneration==self.Generation)) then
             self.Failures=self.Failures+1; self:_invalidate("Истекло время поиска"); return
         end
@@ -374,7 +375,7 @@ function A.new(context)
         self.GroundOffset=root.Position.Y-start.Position.Y
         self:_advance(start.Position,now)
         local point=self.Route[self.Index]
-        if not point then self.AttemptFinished=true; self:_clearPath(); self.Phase,self.Message="position","Держу дистанцию от "..self.TargetName; return end
+        if not point then self.AttemptFinished=not (self.Job or self.ValidationJob or self.EngineCandidate); self:_clearPath(); self.Phase,self.Message="position","Держу дистанцию от "..self.TargetName; return end
         if point.Part and (not point.Part.Parent or not point.Part.CanCollide or point.Pose~=point.Part.CFrame) then
             self:_invalidate("Опора изменилась"); return
         end
@@ -453,13 +454,17 @@ function A.new(context)
         if self.PlanTarget and distance(self.PlanTarget,targetRoot.Position)>o.StaleTargetDistance then
             self.Message="Цель движется — обновляю точку подхода"
         end
+        self.CombatIntent=self.Combat and self.Combat:getMovementIntent(snapshot,self) or nil
+        local intent=self.CombatIntent
+        local holdMin,holdMax=intent and intent.HoldMin or o.HoldMin,intent and intent.HoldMax or o.HoldMax
         local d=distance(root.Position,targetRoot.Position)
-        if d>=o.HoldMin and d<=o.HoldMax and math.abs(root.Position.Y-targetRoot.Position.Y)<3
+        if d>=holdMin and d<=holdMax and math.abs(root.Position.Y-targetRoot.Position.Y)<3
             and not world:Raycast(root.Position,targetRoot.Position-root.Position,self.Params) then
             self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
-            self.AttemptFinished=true; self:_clearPath(); self.Message="Держу дистанцию от "..self.TargetName; self.Phase="position"
+            self.AttemptFinished=true; self:_clearPath(); self.Message=intent and intent.Message or "Держу дистанцию от "..self.TargetName; self.Phase="position"
         else
             local moved=not self.PlanTarget or distance(self.PlanTarget,targetRoot.Position)>o.TargetReplanDistance
+                or (intent and self.PlanStance~=intent.Stance)
             if not self.Route or (moved and self:_canRefresh()) then self:_request(now,targetRoot) end
         end
     end

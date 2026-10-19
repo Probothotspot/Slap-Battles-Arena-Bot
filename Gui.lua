@@ -68,7 +68,11 @@ function Gui.mount(context)
     local close = button(frame,"Close","×",UDim2.new(1,-46,0,14),UDim2.fromOffset(32,32))
     close.TextSize = 23
     local body = create("Frame", { Name = "Body", Position = UDim2.fromOffset(18,64),
-        Size = UDim2.new(1,-36,1,-82), BackgroundTransparency = 1 }, frame)
+        Size = UDim2.new(1,-36,1,-108), BackgroundTransparency = 1 }, frame)
+    local credit=text(frame,"AuthorCredit","By: Probothotspot",18,0,1,18,10,rgb(255,255,255))
+    credit.Position=UDim2.new(0,18,1,-29)
+    credit.TextXAlignment=Enum.TextXAlignment.Center; credit.ZIndex=3
+    local creditGradient=gradient(credit,{rgb(145,145,145),rgb(255,255,255),rgb(175,175,175),rgb(255,255,255)},0)
     local hero = create("Frame", { Name = "StatusCard", Size = UDim2.new(1,0,0,74),
         BackgroundColor3 = rgb(66,40,101), BackgroundTransparency = .15, BorderSizePixel = 0 }, body)
     round(hero,12)
@@ -109,12 +113,29 @@ function Gui.mount(context)
     local tactic = detail("Tactic","ТАКТИКА",167,100)
     local notice = text(pages.Overview,"Notice","",4,278,1,96,11,rgb(173,150,198))
     notice.TextYAlignment = Enum.TextYAlignment.Top
+    local combatInfo=text(pages.Overview,"CombatInfo","",4,382,1,70,11,rgb(214,207,224))
+    combatInfo.TextYAlignment=Enum.TextYAlignment.Top
+    text(pages.Overview,"RangeLabel","Дистанция",4,462,0,20,11).Size=UDim2.fromOffset(190,20)
+    text(pages.Overview,"IntervalLabel","Интервал, с",224,462,0,20,11).Size=UDim2.fromOffset(190,20)
+    local function tuningBox(name,x,value)
+        local box=create("TextBox",{Name=name,Text=value,Position=UDim2.fromOffset(x,484),Size=UDim2.fromOffset(190,30),
+            BackgroundColor3=rgb(50,34,70),TextColor3=rgb(250,245,255),Font=Enum.Font.Gotham,
+            TextSize=13,ClearTextOnFocus=false,BorderSizePixel=0},pages.Overview)
+        round(box,8); return box
+    end
+    local rangeBox=tuningBox("AttackRange",4,tostring(context.Config.Attack.ConservativeRange))
+    local intervalBox=tuningBox("AttackInterval",224,tostring(context.Config.Attack.Interval))
+    local apply=button(pages.Overview,"ApplyCombat","Применить настройки боя",UDim2.fromOffset(4,524),UDim2.new(1,-10,0,30))
+    apply.TextSize=12
+    local tuningNote=text(pages.Overview,"TuningNote","Параметры выбранной перчатки. Проверяй их в игре.",4,560,1,36,10,rgb(178,161,196))
     local statValues = {}
     local statLabels = {
         {"SlapsEarned","ЗАРАБОТАНО СЛАППОВ"},{"Deaths","СМЕРТЕЙ"},
         {"ActiveSeconds","АКТИВНОЕ ВРЕМЯ"},{"SlapsPerHour","СЛАППОВ / ЧАС"},
         {"ArenaEntries","ВЫХОДОВ НА АРЕНУ"},{"PortalAttempts","ПОПЫТОК ВХОДА"},
         {"PortalFailures","НЕУДАЧНЫХ ВХОДОВ"},{"GloveChanges","СМЕН ПЕРЧАТКИ"},
+        {"AttackAttempts","ПОПЫТОК УДАРА"},{"ConfirmedHits","ПОДТВЕРЖДЁННЫХ ПОПАДАНИЙ"},
+        {"UnconfirmedAttacks","БЕЗ ПОДТВЕРЖДЕНИЯ"},{"ActivationErrors","ОШИБОК АКТИВАЦИИ"},
     }
     for i,entry in ipairs(statLabels) do
         local col,row = (i-1)%2,math.floor((i-1)/2)
@@ -124,12 +145,12 @@ function Gui.mount(context)
         statValues[entry[1]] = text(card,entry[1],"0",12,9,1,31,entry[1]=="ActiveSeconds" and 20 or 26,rgb(231,201,255),true)
         text(card,entry[1].."Label",entry[2],12,44,1,25,9,rgb(188,157,217),true)
     end
-    local statNote = text(pages.Statistics,"StatsNote","",4,352,1,80,11,rgb(183,157,209))
+    local statNote = text(pages.Statistics,"StatsNote","",4,528,1,110,11,rgb(183,157,209))
     statNote.TextYAlignment = Enum.TextYAlignment.Top
     create("UIListLayout", { Padding = UDim.new(0,8), SortOrder = Enum.SortOrder.LayoutOrder },pages.Journal)
     local view = { Frame=frame, Body=body, Scale=scale, Collapse=collapse, Run=runLabel, PathButton=showPath, Notice=notice,
         Subtitle=subtitle, Status=status, Location=location, Action=action, Glove=glove,
-        Tactic=tactic, StatValues=statValues, StatNote=statNote, Pages=pages, Tabs=tabs,
+        Tactic=tactic, StatValues=statValues, StatNote=statNote, CombatInfo=combatInfo, Credit=credit, RangeBox=rangeBox, IntervalBox=intervalBox, TuningNote=tuningNote, Pages=pages, Tabs=tabs,
         Selected="Overview", Collapsed=false, LogRevision=-1, LastRunning=nil, Placed=false }
     views[gui] = view
     local animated = {}
@@ -140,6 +161,7 @@ function Gui.mount(context)
     animate(borderGradient,16,{Rotation=395})
     animate(surfaceGradient,28,{Rotation=380})
     animate(runGradient,12,{Rotation=360})
+    animate(creditGradient,5,{Rotation=360})
     local function fit()
         local size = root.AbsoluteSize
         if size.X<=0 or size.Y<=0 then return end
@@ -155,6 +177,7 @@ function Gui.mount(context)
         view.Collapsed=not view.Collapsed
         collapse.Text=view.Collapsed and "+" or "−"
         body.Visible=not view.Collapsed
+        credit.Visible=not view.Collapsed
         if view.SizeTween then view.SizeTween:Cancel() end
         view.SizeTween=tweenService:Create(frame,TweenInfo.new(.2,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
             { Size=UDim2.fromOffset(width,view.Collapsed and 60 or height) })
@@ -162,6 +185,10 @@ function Gui.mount(context)
     end))
     cleanup:add(run.Activated:Connect(function()
         if app.Running then app:Stop() else app:Start() end
+    end))
+    cleanup:add(apply.Activated:Connect(function()
+        local r=tonumber((rangeBox.Text:gsub(",","."))); local cd=tonumber((intervalBox.Text:gsub(",",".")))
+        if not app:SetCombatTuning(r,cd) then tuningNote.Text="Дистанция: 1–40; интервал: 0.15–30 с." end
     end))
     cleanup:add(showPath.Activated:Connect(function() app:SetPathVisible(not app.PathVisible) end))
     cleanup:add(close.Activated:Connect(function() app:Destroy() end))
@@ -209,6 +236,7 @@ function Gui.update(gui,app)
     local v=views[gui]
     if not v then return end
     local s,stats=app.Snapshot or {},app.StatsView or {}
+    local combat=app.CombatView or {}
     local zones={lobby="Лобби",arena="Арена",waiting="Загрузка персонажа"}
     v.Status.Text=app.Status=="error" and "Ошибка сессии" or (app.Running and "Бот работает" or "Бот на паузе")
     v.Subtitle.Text=(app.Running and "RUNNING" or "PAUSED").."  /  v"..app.Version.."  /  "..clockText(stats.SessionSeconds)
@@ -224,17 +252,30 @@ function Gui.update(gui,app)
         (app.Plan and app.Plan.Reason) or "Ожидание персонажа")
     v.PathButton.Text="Показать путь: "..(app.PathVisible and "вкл" or "выкл")
     local nav=app.ArenaStatus or {}
-    v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—").."\nПоисков: "..(nav.Plans or 0).." · Узлов: "..(nav.GraphNodes or 0).."\nАктиваций инструмента: "..(app.AttackAttempts or 0).." (это не подтверждённые попадания)."
+    v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—").."\nПоисков: "..(nav.Plans or 0).." · Узлов: "..(nav.GraphNodes or 0).."\nАктиваций инструмента: "..(combat.AttackAttempts or app.AttackAttempts or 0).." · ожидают ответа: "..(combat.PendingAttacks or 0)
+    local profile=combat.Profile
+    v.CombatInfo.Text=(combat.Message or "Бой остановлен").."\n"..
+        (profile and string.format("Дистанция %.1f · Интервал %.2f с · Таймер %.1f с",profile.Range,profile.Interval,combat.Cooldown or 0) or "Профиль появится после выбора перчатки").."\n"..
+        (combat.HitFeedAvailable and "Подтверждения попаданий подключены" or "Попадания: источник подтверждений не подключён")
+    if s.GloveName~=v.TuningGlove then
+        v.TuningGlove=s.GloveName
+        local configured=app.Config.Attack.GloveProfiles[s.GloveName or "Default"] or {}
+        v.RangeBox.Text=tostring(configured.Range or app.Config.Attack.ConservativeRange)
+        v.IntervalBox.Text=tostring(configured.Interval or app.Config.Attack.Interval)
+    end
     v.Glove.Text=s.GloveName or (s.AmbiguousTools and "Выбери инструмент в руках" or "Перчатки пока нет")
     v.Tactic.Text=app.Glove and app.Glove.Hint or "Тактика появится после получения перчатки."
     for key,label in pairs(v.StatValues) do
-        if key=="ActiveSeconds" then label.Text=clockText(stats[key])
+        if key=="AttackAttempts" or key=="UnconfirmedAttacks" or key=="ActivationErrors" then label.Text=number(combat[key] or 0)
+        elseif key=="ConfirmedHits" then label.Text=number(combat[key])
+        elseif key=="ActiveSeconds" then label.Text=clockText(stats[key])
         elseif key=="SlapsEarned" then label.Text=stats.SlapsAvailable and "+"..number(stats[key] or 0) or "—"
         elseif key=="SlapsPerHour" then label.Text=stats.SlapsAvailable and number(stats[key] or 0) or "—"
         else label.Text=number(stats[key] or 0) end
     end
     v.StatNote.Text="Всего слаппов: "..number(stats.TotalSlaps).."\n"..
-        (stats.SlapsAvailable and "Слаппы — прирост игрового счётчика во время работы бота." or "Игровой счётчик Slaps недоступен. Ожидаю данные.")
+        (stats.SlapsAvailable and "Слаппы — прирост игрового счётчика во время работы бота." or "Игровой счётчик Slaps недоступен. Ожидаю данные.").."\n"..
+        (combat.HitFeedAvailable and "Попадания учитываются по подключённому подтверждающему событию." or "Подтверждения попаданий не подключены; отсутствие ответа не означает промах.")
     if v.LogRevision~=(stats.Revision or 0) then
         v.LogRevision=stats.Revision or 0
         for _,child in ipairs(v.Pages.Journal:GetChildren()) do if child:IsA("TextLabel") then child:Destroy() end end
