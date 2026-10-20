@@ -623,11 +623,51 @@ local cameraPosition=camera.CFrame.Position; local oldLook=camera.CFrame.LookVec
 binds.ArenaBotTargetCamera(1/60)
 eq(camera.CFrame.Position,cameraPosition,"Camera tracking preserves zoom/collision position")
 eq(camera.CFrame.LookVector.X>oldLook.X,true,"Camera turns toward the live target")
+eq(follow:ownsFacing(r.Humanoid),true,"Camera lock owns character rotation")
+eq(r.Humanoid.AutoRotate,false)
+local heading=V.new(camera.CFrame.LookVector.X,0,camera.CFrame.LookVector.Z).Unit
+eq(r.Root.CFrame.LookVector:Dot(heading)>.999,true,"Avatar matches the camera's horizontal heading")
+local jumpPosition=r.Root.Position; local jumpVelocity=V.new(2,25,3)
+r.Root.AssemblyLinearVelocity=jumpVelocity; r.Humanoid.Jump=true; follow:step(.1)
+eq(r.Root.Position,jumpPosition,"Lock never translates the character while jumping")
+eq(r.Root.AssemblyLinearVelocity,jumpVelocity,"Lock preserves jump velocity")
+eq(r.Humanoid.Jump,true,"Lock does not request or cancel jumps")
+r.Humanoid.PlatformStand=true; follow:step(.1)
+eq(follow:ownsFacing(r.Humanoid),false,"Ragdoll releases forced yaw")
+eq(r.Humanoid.AutoRotate,true)
+r.Humanoid.PlatformStand=false; r.Humanoid.AutoRotate=false
+follow:step(.1); follow:setLock(false)
+eq(r.Humanoid.AutoRotate,false,"Disabling lock restores an originally false AutoRotate")
+r.Humanoid.AutoRotate=true; follow:setLock(true); follow:step(.1)
 camera.CameraType="Scriptable"; local cutscene=camera.CFrame; follow:step(.1)
 eq(camera.CFrame,cutscene,"Cutscene orientation remains untouched")
+eq(r.Humanoid.AutoRotate,true,"Cutscene restores character rotation")
+eq(follow:ownsFacing(r.Humanoid),false)
 camera.CameraType="Custom"; r.EnemyHumanoid.Health=0; follow:step(.1)
 eq(next(binds),nil,"Target death releases render binding immediately")
 follow:Destroy(); r.Nav:Destroy()
+
+-- Facing ownership transfers from combat to camera and back without capturing
+-- the temporary false AutoRotate value as the character's original setting.
+r=battle(); r:prepare(); eq(r.Humanoid.AutoRotate,false)
+local lockCamera={CFrame=CFrame.lookAt(V.new(0,8,10),V.new(0,8,0)),CameraType="Custom"}
+follow=Camera.new({Player=r.Player,Options=config.Camera,Workspace={CurrentCamera=lockCamera},
+    ReleaseCombatFacing=function() r.Combat:yieldFacing() end,
+    RunService={BindToRenderStep=function() end,UnbindFromRenderStep=function() end}})
+r.Combat.TargetCamera=follow; follow:update(r.Snapshot,r.Nav); follow:step(.1)
+eq(r.Combat.FacingHumanoid,nil,"Camera releases the old combat owner before taking rotation")
+local lockedFrame=r.Root.CFrame
+r.Combat:_face(r.Root,r.Humanoid,r.Root.Position+V.new(-10,0,0),.1)
+eq(r.Root.CFrame,lockedFrame,"Combat alignment check cannot overwrite camera lock")
+r.Combat:stop(); eq(r.Humanoid.AutoRotate,false,"Combat Stop does not release another controller's lock")
+follow:setLock(false); eq(r.Humanoid.AutoRotate,true,"Ownership handoff preserves original AutoRotate")
+lockCamera.CameraType="Scriptable"; follow:step(.1); r:prepare()
+eq(r.Humanoid.AutoRotate,true,"Combat cannot reclaim facing during a cutscene")
+lockCamera.CameraType="Custom"; follow:step(.1)
+r.Combat:_face(r.Root,r.Humanoid,r.EnemyRoot.Position,.1)
+eq(r.Humanoid.AutoRotate,false,"Normal combat facing resumes when camera lock is off")
+r.Combat:stop(); eq(r.Humanoid.AutoRotate,true)
+follow:Destroy(); r.Combat:Destroy(); r.Nav:Destroy(); config.Camera.CharacterLock=true
 
 local Ability=dofile("Abilities.lua")
 local function abilityBattle(attributes)

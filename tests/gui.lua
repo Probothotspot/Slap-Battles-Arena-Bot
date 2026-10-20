@@ -101,6 +101,7 @@ local backpack=Instance.new("Backpack"); backpack.Parent=player
 local board=Instance.new("Folder"); board.Name="leaderstats"; board.Parent=player
 local slaps=Instance.new("IntValue"); slaps.Name="Slaps"; slaps.Value=100; slaps.Parent=board
 local input=Instance.new("UserInputService")
+function input:GetFocusedTextBox() return self.FocusedBox end
 local heartbeat=signal()
 local services={Players={LocalPlayer=player},UserInputService=input,RunService={Heartbeat=heartbeat},TweenService={}}
 function services.TweenService:Create(object,_,goals)
@@ -154,6 +155,18 @@ find("SearchChecks").Text="invalid"; click("ApplySearchChecks")
 eq(app.Config.Pursuit.WorkPerFrame,100,"Invalid GUI value leaves the working planner intact")
 click("LearningToggle"); eq(app.Settings.LearningEnabled,false)
 click("LearningToggle"); eq(app.Settings.LearningEnabled,true)
+eq(app.Settings.CameraLock,true)
+click("CameraLockToggle"); eq(app.Settings.CameraLock,false); eq(app.Config.Camera.CharacterLock,false)
+Enum.KeyCode={CapsLock="CapsLock",E="E"}
+input.InputBegan:Fire({KeyCode="CapsLock"},true)
+eq(app.Settings.CameraLock,false,"Processed keyboard input does not toggle camera lock")
+input.FocusedBox=true; input.InputBegan:Fire({KeyCode="CapsLock"},false)
+eq(app.Settings.CameraLock,false,"Typing in a text box does not toggle camera lock")
+input.FocusedBox=nil; input.InputBegan:Fire({KeyCode="E"},false)
+eq(app.Settings.CameraLock,false,"Other keyboard keys do not toggle camera lock")
+input.InputBegan:Fire({KeyCode="CapsLock"},false)
+eq(app.Settings.CameraLock,true,"CapsLock toggles the real camera option")
+click("CameraLockToggle"); eq(app.Settings.CameraLock,false)
 eq(find("AuthorCredit").Text,"By: Probothotspot","Exact requested author label")
 eq(find("AuthorCredit"):FindFirstChildOfClass("UIGradient")~=nil,true,"White-gray animated credit has a gradient")
 eq(find("ConfirmedHits").Text,"—","Unavailable confirmations are not invented hits")
@@ -229,6 +242,7 @@ modules={}
 app=loadModule("main.lua").start(loadModule,dofile("manifest.lua"),{Silent=true,Destroy=function() end})
 eq(find("Title").Text,"ARENA BOT | Delta")
 app:SetSearchChecks(176); app:SetPathVisible(true); app:SetCombatTuning(5.8,1.1)
+app:SetCameraLock(false)
 app.Memory:policy({Alive=true,GloveName="Default"},{Character=character,Humanoid=humanoid,
     Target={UserId=2,Character=character}},false)
 app.Memory:death(character)
@@ -239,6 +253,8 @@ eq(app.Settings.SearchChecks,176,"Fresh Main restores saved budget")
 eq(find("SearchChecks").Text,"176","Loaded value appears immediately in GUI")
 eq(app.Config.Pursuit.WorkPerFrame,176)
 eq(app.PathVisible,true); eq(app.Settings.LearningEnabled,false)
+eq(app.Settings.CameraLock,false,"Fresh Main restores camera lock preference")
+eq(app.Config.Camera.CharacterLock,false)
 eq(app.Config.Attack.GloveProfiles.Default.Range,5.8)
 eq(app.Config.Attack.GloveProfiles.Default.Interval,1.1)
 eq(app.Memory.Data.Deaths,1,"Fresh Main restores experience")
