@@ -245,15 +245,18 @@ function A.new(context)
             local behind=intent.Behind.Unit
             local atan=math.atan2 or math.atan
             local angle=(atan(behind.Z,behind.X)-atan(dir.Z,dir.X)+math.pi)%(2*math.pi)-math.pi
+            if intent.FlankSide and intent.FlankSide~=0 and math.abs(angle)>.05 and angle*intent.FlankSide<0 then
+                angle=angle+2*math.pi*intent.FlankSide
+            end
             if math.abs(math.abs(angle)-math.pi)<.05 then
                 self.FlankSide=self.FlankSide or ((player.UserId or 0)%2==0 and 1 or -1)
-                angle=math.abs(angle)*self.FlankSide
+                angle=math.abs(angle)*((intent.FlankSide and intent.FlankSide~=0) and intent.FlankSide or self.FlankSide)
             end
             local turn=math.min(math.abs(angle),o.FlankStep or math.rad(45))*(angle<0 and -1 or 1)
             local c,s=math.cos(turn),math.sin(turn)
             preferred=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)
         end
-        local count=math.max(5,math.min(48,o.GoalCandidates or 24))
+        local count=math.max(5,math.min(64,o.GoalCandidates or 24))
         for i=0,count-1 do
             local angle=i*2*math.pi/count
             local c,s=math.cos(angle),math.sin(angle)

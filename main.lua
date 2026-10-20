@@ -14,17 +14,21 @@ function Main.start(loadModule, manifest, diagnostics)
     if type(previous) == "table" and type(previous.Destroy) == "function" then previous:Destroy() end
 
     local player = game:GetService("Players").LocalPlayer
+    local settings=systems.Settings.new({Config=config,UserId=player.UserId,
+        Globals={identifyexecutor=identifyexecutor,getexecutorname=getexecutorname,
+            readfile=readfile,writefile=writefile,isfile=isfile}})
     local adapter = Adapter.new({Player=player})
     local cleanup = Cleanup.new()
     local logger = Logger.new(config.Debug)
     local inventory = systems.Perception.new(config.Arena)
     local stats = systems.SessionStats.new()
+    local memory=systems.Memory.new({Settings=settings,UserId=player.UserId,Player=player})
     local navigation = systems.Navigation.new({ Player = player, Options = config.Portal, Arena = config.Arena })
     local pursuit = systems.ArenaNavigation.new({ Player=player, Options=config.Pursuit, Arena=config.Arena,
         SurfaceRoutes=systems.SurfaceRoutes, Knowledge=systems.GloveKnowledge })
     local preview = systems.PathPreview.new({Options=config.PathPreview})
     local combat = systems.Combat.new({Options=config.Attack,Adapter=adapter,Player=player,Arena=config.Arena,
-        Knowledge=systems.GloveKnowledge,Log=function(message) stats:log(message) end})
+        Knowledge=systems.GloveKnowledge,Memory=memory,Log=function(message) stats:log(message) end})
     pursuit.Combat=combat
     local camera=systems.TargetCamera.new({Player=player,Options=config.Camera})
     local abilities=systems.Abilities.new({Player=player,Options=config.Abilities,Arena=config.Arena,
@@ -32,9 +36,11 @@ function Main.start(loadModule, manifest, diagnostics)
     local app = { Version = manifest.version, Config = config, Systems = systems,
         Adapter = adapter, Status = "paused", Destroyed = false, Running = false,
         Navigation = navigation, Pursuit=pursuit, Preview=preview, Combat=combat, TargetCamera=camera,Abilities=abilities,
-        PathVisible=false, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
+        Settings=settings,Memory=memory,ExecutorName=settings.Executor,Device=settings.Device,
+        PathVisible=settings.PathVisible, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
+    preview:setEnabled(app.PathVisible)
     app.CatalogStats = app.GloveKnowledge.stats()
-    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:Destroy(); camera:Destroy(); abilities:Destroy(); adapter:Destroy() end)
+    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:Destroy(); camera:Destroy(); abilities:Destroy(); memory:Destroy(); adapter:Destroy() end)
 
     local counter, counterConnection, lifeCharacter, lifeHumanoid, diedConnection, childConnection
     local function readSlaps()
@@ -62,7 +68,10 @@ function Main.start(loadModule, manifest, diagnostics)
         stats:life(character, humanoid)
         if humanoid then
             diedConnection = humanoid.Died:Connect(function()
-                if not app.Destroyed then stats:death(character) end
+                if not app.Destroyed then
+                    stats:death(character)
+                    if app.Running then memory:death(character) end
+                end
             end)
         end
     end
@@ -95,6 +104,7 @@ function Main.start(loadModule, manifest, diagnostics)
     local lastTarget,lastRoute,lastFailures
     local function refresh()
         sample()
+        if app.Running then memory:observe(app.Snapshot,pursuit) end
         combat.CurrentProfile=app.Snapshot.Tool and combat:profile(app.Snapshot.Tool) or nil
         if app.Running then
             navigation:update(app.Snapshot)
@@ -122,6 +132,7 @@ function Main.start(loadModule, manifest, diagnostics)
         end
         app.CombatView=combat:snapshot()
         app.AbilityView=abilities:snapshot()
+        app.MemoryView=memory:snapshot()
         app.ArenaStatus=pursuit:getStatus()
         if app.Running and app.Snapshot.ArenaState=="arena" then
             local n=app.ArenaStatus
@@ -136,7 +147,9 @@ function Main.start(loadModule, manifest, diagnostics)
     local function fail(err)
         navigation:stop("Ошибка: движение остановлено"); pursuit:stop(); combat:stop(); camera:stop(); abilities:stop(); preview:update({})
         stats:setRunning(false)
+        memory:stop()
         app.Running, app.Status, app.LastError = false, "error", tostring(err)
+        app.MemoryView=memory:snapshot()
         app.StatsView = stats:snapshot()
         if app.Gui then pcall(Gui.update, app.Gui, app) end
         warn("[ArenaBot] Session failed: " .. tostring(err))
@@ -157,9 +170,11 @@ function Main.start(loadModule, manifest, diagnostics)
         if self.Running then pcall(sample) end
         navigation:stop("Бот остановлен"); pursuit:stop(); combat:stop(); camera:stop(); abilities:stop(); preview:update({})
         stats:setRunning(false)
+        memory:stop()
         self.Running = false
         if self.Status ~= "error" then self.Status = "paused" end
         self.CombatView=combat:snapshot()
+        self.MemoryView=memory:snapshot()
         self.ArenaStatus=pursuit:getStatus()
         self.NavigationStatus, self.StatsView = navigation:getStatus(), stats:snapshot()
         if self.Gui then pcall(Gui.update, self.Gui, self) end
@@ -173,6 +188,7 @@ function Main.start(loadModule, manifest, diagnostics)
         local profile=config.Attack.GloveProfiles[name] or {}
         profile.Range,profile.Interval,profile.Verified=range,interval,false
         config.Attack.GloveProfiles[name]=profile
+        settings:setProfile(name,range,interval)
         stats:log("Настройки боя: "..name..", дистанция "..range..", интервал "..interval.." с")
         refresh(); return true
     end
@@ -193,11 +209,44 @@ function Main.start(loadModule, manifest, diagnostics)
     function app:SetPathVisible(value)
         if self.Destroyed then return end
         self.PathVisible=value==true; preview:setEnabled(self.PathVisible)
+        settings:setPathVisible(self.PathVisible)
         if self.Gui then Gui.update(self.Gui,self) end
+    end
+    function app:SetSearchChecks(value)
+        if self.Destroyed or not settings:setChecks(value) then return false end
+        -- The live options table is shared with the cooperative planner. A change
+        -- is used at its next checkpoint; keep valid routes and engine requests.
+        stats:log("Бюджет поиска: "..value.." операций/кадр, вариантов "..config.Pursuit.GoalCandidates)
+        if self.Gui then Gui.update(self.Gui,self) end
+        return true
+    end
+    function app:SetLearningEnabled(value)
+        if self.Destroyed then return false end
+        memory:stop(); settings:setLearning(value)
+        self.MemoryView=memory:snapshot()
+        if self.Gui then Gui.update(self.Gui,self) end
+        return true
+    end
+    -- Supply only a decoder for a verified server kill attribution feed. A target
+    -- dying nearby or vanishing from Workspace does not identify its killer.
+    local killConnection
+    cleanup:add(function() if killConnection then killConnection:Disconnect() end end)
+    function app:BindKillConfirmation(signal,decode)
+        if self.Destroyed then return false end
+        assert(signal and type(decode)=="function","Kill feed requires signal and decoder")
+        if killConnection then killConnection:Disconnect() end
+        killConnection=signal:Connect(function(...)
+            if self.Destroyed or not self.Running or not settings.LearningEnabled then return end
+            local good,payload=pcall(decode,...)
+            if good then memory:confirmKill(payload) end
+        end)
+        self.KillFeedAvailable=true
+        return true
     end
     function app:Destroy()
         if self.Destroyed then return end
         self:Stop()
+        settings:save()
         self.Destroyed, self.Status = true, "stopped"
         cleanup:Destroy()
         if env[key] == self then env[key] = nil end

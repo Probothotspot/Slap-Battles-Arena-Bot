@@ -5,6 +5,7 @@ return {
     PerceptionInterval = 0.2,
     DecisionInterval = 0.1,
     ReactionDelay = 0.15,
+    Performance = { MobileChecks=100, PCChecks=400 },
     Arena = { LobbyMinY = 300, LobbyMaxY = 400 },
     Portal = {
         Enabled = true, Path = { "Lobby", "Teleport1" },

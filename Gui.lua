@@ -60,7 +60,8 @@ function Gui.mount(context)
     local surfaceGradient = gradient(inner,{rgb(23,14,40),rgb(48,26,75),rgb(25,16,47)},20)
     local scale = create("UIScale", { Scale = 1 }, frame)
     local collapse = button(frame,"Collapse","−",UDim2.fromOffset(14,14),UDim2.fromOffset(32,32))
-    local title = text(frame,"Title","ARENA BOT",56,9,0,24,18,nil,true)
+    local title = text(frame,"Title","ARENA BOT | "..(app.ExecutorName or "Unknown"),56,9,0,24,16,nil,true)
+    if Enum.TextTruncate then title.TextTruncate=Enum.TextTruncate.AtEnd end
     title.Size = UDim2.new(1,-110,0,24)
     title.Active = true
     local subtitle = text(frame,"Subtitle","PAUSED  /  v"..context.Manifest.version,56,32,0,17,10,rgb(186,160,218))
@@ -128,6 +129,17 @@ function Gui.mount(context)
     local apply=button(pages.Overview,"ApplyCombat","Применить настройки боя",UDim2.fromOffset(4,524),UDim2.new(1,-10,0,30))
     apply.TextSize=12
     local tuningNote=text(pages.Overview,"TuningNote","Параметры выбранной перчатки. Проверяй их в игре.",4,560,1,36,10,rgb(178,161,196))
+    text(pages.Overview,"SearchChecksLabel","ПРОВЕРОК ПОИСКА ЗА КАДР · 10–2000",4,610,1,22,11,nil,true)
+    local budgetBox=tuningBox("SearchChecks",4,tostring(app.Settings.SearchChecks))
+    budgetBox.Position=UDim2.fromOffset(4,640)
+    local applyBudget=button(pages.Overview,"ApplySearchChecks","Применить",UDim2.fromOffset(224,640),UDim2.fromOffset(190,30))
+    applyBudget.TextSize=12
+    local performanceInfo=text(pages.Overview,"PerformanceInfo","",4,680,1,58,11,rgb(207,184,233))
+    local settingsInfo=text(pages.Overview,"SettingsInfo","",4,744,1,42,10,rgb(178,161,196))
+    local learningToggle=button(pages.Overview,"LearningToggle","Локальное обучение: вкл",UDim2.fromOffset(4,800),UDim2.new(1,-10,0,32))
+    learningToggle.TextSize=12
+    local learningInfo=text(pages.Overview,"LearningInfo","",4,842,1,110,11,rgb(207,184,233))
+    learningInfo.TextYAlignment=Enum.TextYAlignment.Top
     local statValues = {}
     local statLabels = {
         {"SlapsEarned","ЗАРАБОТАНО СЛАППОВ"},{"Deaths","СМЕРТЕЙ"},
@@ -151,6 +163,7 @@ function Gui.mount(context)
     local view = { Frame=frame, Body=body, Scale=scale, Collapse=collapse, Run=runLabel, PathButton=showPath, Notice=notice,
         Subtitle=subtitle, Status=status, Location=location, Action=action, Glove=glove,
         Tactic=tactic, StatValues=statValues, StatNote=statNote, CombatInfo=combatInfo, Credit=credit, RangeBox=rangeBox, IntervalBox=intervalBox, TuningNote=tuningNote, Pages=pages, Tabs=tabs,
+        BudgetBox=budgetBox,PerformanceInfo=performanceInfo,SettingsInfo=settingsInfo,LearningToggle=learningToggle,LearningInfo=learningInfo,
         Selected="Overview", Collapsed=false, LogRevision=-1, LastRunning=nil, Placed=false }
     views[gui] = view
     local animated = {}
@@ -191,6 +204,10 @@ function Gui.mount(context)
         if not app:SetCombatTuning(r,cd) then tuningNote.Text="Дистанция: 1–40; интервал: 0.15–30 с." end
     end))
     cleanup:add(showPath.Activated:Connect(function() app:SetPathVisible(not app.PathVisible) end))
+    cleanup:add(applyBudget.Activated:Connect(function()
+        if not app:SetSearchChecks(tonumber(budgetBox.Text)) then settingsInfo.Text="Введи целое число от 10 до 2000." end
+    end))
+    cleanup:add(learningToggle.Activated:Connect(function() app:SetLearningEnabled(not app.Settings.LearningEnabled) end))
     cleanup:add(close.Activated:Connect(function() app:Destroy() end))
     for name,control in pairs(tabs) do
         local selected=name
@@ -251,6 +268,20 @@ function Gui.update(gui,app)
         (s.ArenaState=="arena" and app.ArenaStatus and app.ArenaStatus.Message) or
         (app.Plan and app.Plan.Reason) or "Ожидание персонажа")
     v.PathButton.Text="Показать путь: "..(app.PathVisible and "вкл" or "выкл")
+    local settings=app.Settings
+    if settings then
+        if v.LastChecks~=settings.SearchChecks then v.BudgetBox.Text=tostring(settings.SearchChecks); v.LastChecks=settings.SearchChecks end
+        v.PerformanceInfo.Text=string.format("%s · лимит %d операций/кадр · до %.1f мс\nВариантов подхода: %d · предел A*: %d",
+            settings.Device,settings.SearchChecks,app.Config.Pursuit.BudgetSeconds*1000,
+            app.Config.Pursuit.GoalCandidates,app.Config.Pursuit.MaxExpanded)
+        v.SettingsInfo.Text=settings.Message
+        v.LearningToggle.Text="Локальное обучение: "..(settings.LearningEnabled and "вкл" or "выкл")
+    end
+    local memory=app.MemoryView or {}
+    v.LearningInfo.Text=string.format("Опыт: %d ситуаций · исходов: %d\nСмертей: %d · попаданий: %d · убийств: %d\nТактика: %s\n%s",
+        memory.Contexts or 0,memory.Outcomes or 0,memory.Deaths or 0,memory.Hits or 0,memory.Kills or 0,
+        memory.Action or "ожидание",(memory.Message or "Инициализация памяти")..
+            (app.KillFeedAvailable and "" or "\nУбийства: источник подтверждений не подключён"))
     local nav=app.ArenaStatus or {}
     v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—")..
         string.format("\nРасчёт: %.0f мс · вариантов: %d · кэш: %s",(nav.PlanSeconds or 0)*1000,nav.GoalCandidates or 0,nav.GraphCacheHit and "да" or "нет")..

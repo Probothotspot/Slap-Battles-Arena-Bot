@@ -121,6 +121,7 @@ function C.new(context)
         self.Seen[key]=true; table.insert(self.SeenOrder,key)
         if #self.SeenOrder>128 then self.Seen[table.remove(self.SeenOrder,1)]=nil end
         self.Pending[id]=nil; self.ConfirmedHits=self.ConfirmedHits+1
+        if context.Memory then context.Memory:hit(id) end
         if context.Log then context.Log("Подтверждено попадание по "..record.TargetName) end
         return true
     end
@@ -136,6 +137,8 @@ function C.new(context)
         local tc=pursuit.Target and pursuit.Target.Character
         local tr=tc and tc:FindFirstChild("HumanoidRootPart")
         local desired=self:_measuredDistance(snapshot.Tool,pursuit.Root,tr,p)
+        local learned=context.Memory and context.Memory:policy(snapshot,pursuit,narrow)
+        if learned and not narrow then desired=math.max(1,math.min(p.Range,desired*learned.Scale)) end
         if recovery and not narrow then desired=p.Range+o.RecoveryPadding end
         local flanking=false
         local behind=tr and tr.CFrame and flat(tr.CFrame.LookVector)*-1
@@ -145,7 +148,8 @@ function C.new(context)
                 and offset.Unit:Dot(behind.Unit)<math.cos(o.BehindAngle or math.rad(60))
         end
         return {DesiredDistance=desired,HoldMin=math.max(.8,desired-.55),HoldMax=math.min(desired+.45,recovery and desired+.45 or p.Range),
-            Narrow=narrow,Flanking=flanking,Behind=behind,Stance=recovery and "recover" or "attack",
+            Narrow=narrow,Flanking=flanking,Behind=behind,FlankSide=not narrow and learned and learned.Side or 0,
+            Stance=recovery and "recover" or "attack",
             Message=recovery and "Выдерживаю интервал и сохраняю дистанцию" or (flanking and "Захожу за спину" or "Подхожу для удара")}
     end
     function self:_face(root,humanoid,target,dt)
@@ -227,7 +231,9 @@ function C.new(context)
         while #ids>16 do self.Pending[table.remove(ids,1)]=nil; self.Unconfirmed=self.Unconfirmed+1 end
         self.Phase,self.Message="swing","Удар по "..target.Name
         local ok=pcall(function() s.Tool:Activate() end)
-        if ok then self.Tool=s.Tool; self.ReleaseAt=clock()+o.ActivationSeconds
+        if ok then
+            self.Tool=s.Tool; self.ReleaseAt=clock()+o.ActivationSeconds
+            if context.Memory then context.Memory:attack(id,self.Pending[id]) end
         else self.Pending[id]=nil; self.ActivationErrors=self.ActivationErrors+1; self.Message="Не удалось активировать инструмент" end
         if context.Log then context.Log("Попытка удара #"..id.." по "..target.Name) end
     end
