@@ -30,7 +30,9 @@ function Main.start(loadModule, manifest, diagnostics)
     local combat = systems.Combat.new({Options=config.Attack,Adapter=adapter,Player=player,Arena=config.Arena,
         Knowledge=systems.GloveKnowledge,Memory=memory,Log=function(message) stats:log(message) end})
     pursuit.Combat=combat
-    local camera=systems.TargetCamera.new({Player=player,Options=config.Camera})
+    local camera=systems.TargetCamera.new({Player=player,Options=config.Camera,
+        ReleaseCombatFacing=function() combat:yieldFacing() end})
+    combat.TargetCamera=camera
     local abilities=systems.Abilities.new({Player=player,Options=config.Abilities,Arena=config.Arena,
         Knowledge=systems.GloveKnowledge,UserInput=game:GetService("UserInputService"),Log=function(message) stats:log(message) end})
     local app = { Version = manifest.version, Config = config, Systems = systems,
@@ -227,6 +229,13 @@ function Main.start(loadModule, manifest, diagnostics)
         if self.Gui then Gui.update(self.Gui,self) end
         return true
     end
+    function app:SetCameraLock(value)
+        if self.Destroyed then return false end
+        -- Release facing ownership before optional file I/O can yield.
+        camera:setLock(value); settings:setCameraLock(value)
+        if self.Gui then Gui.update(self.Gui,self) end
+        return true
+    end
     -- Supply only a decoder for a verified server kill attribution feed. A target
     -- dying nearby or vanishing from Workspace does not identify its killer.
     local killConnection
@@ -268,6 +277,12 @@ function Main.start(loadModule, manifest, diagnostics)
             cleanup:add(function() diagnostics:Destroy() end)
         end
         refresh()
+        local input=game:GetService("UserInputService")
+        cleanup:add(input.InputBegan:Connect(function(event,processed)
+            if processed or app.Destroyed or not Enum.KeyCode or event.KeyCode~=Enum.KeyCode.CapsLock then return end
+            if input:GetFocusedTextBox() then return end
+            app:SetCameraLock(not settings.CameraLock)
+        end))
         local elapsed,previewElapsed = 0,0
         cleanup:add(game:GetService("RunService").Heartbeat:Connect(function(dt)
             if app.Destroyed or app.Status == "error" then return end

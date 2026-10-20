@@ -39,7 +39,7 @@ return {
         GloveProfiles={Default={Range=4.5,Interval=.8,Verified=false},
             Extended={Range=12,Interval=.8,StandOff=.9,PreferContact=true,Verified=false}},
     },
-    Camera = {Enabled=true,Responsiveness=12,AimHeight=1,PredictionSeconds=.08},
+    Camera = {Enabled=true,CharacterLock=true,Responsiveness=12,AimHeight=1,PredictionSeconds=.08},
     Abilities = {Enabled=true,ScanInterval=1,MaxGuiScan=600,FallbackInterval=3,
         PressSeconds=.05,TargetRange=24,ThreatDistance=10},
     PathPreview = { MaxSteps=48, Spacing=2, Interval=.1 },

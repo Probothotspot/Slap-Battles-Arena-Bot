@@ -14,7 +14,7 @@ function M.new(context)
     local g=context.Globals or {}
     local input=context.Input or service("UserInputService")
     local http=context.HttpService or service("HttpService")
-    local self={Executor="Unknown",Device="Unknown",Profiles={},PathVisible=false,LearningEnabled=true,Dirty=false,
+    local self={Executor="Unknown",Device="Unknown",Profiles={},PathVisible=false,LearningEnabled=true,CameraLock=true,Dirty=false,
         Message="Сохранение недоступно: нет файлового API",StorageAvailable=false}
     for _,fn in ipairs({g.identifyexecutor or false,g.getexecutorname or false}) do
         if type(fn)=="function" then
@@ -60,7 +60,8 @@ function M.new(context)
         if type(raw)~="string" or #raw>65536 then return nil end
         local good,data=pcall(function() return http:JSONDecode(raw) end)
         if not good or type(data)~="table" or data.Schema~=1 or not checks(data.SearchChecks)
-            or type(data.PathVisible)~="boolean" or type(data.Profiles)~="table" then return nil end
+            or type(data.PathVisible)~="boolean" or type(data.Profiles)~="table"
+            or (data.CameraLock~=nil and type(data.CameraLock)~="boolean") then return nil end
         local count=0
         for name,p in pairs(data.Profiles) do
             count=count+1
@@ -90,6 +91,8 @@ function M.new(context)
             self:applyBudget(data.SearchChecks)
             self.PathVisible=data.PathVisible
             self.LearningEnabled=data.LearningEnabled~=false
+            self.CameraLock=data.CameraLock~=false
+            config.Camera.CharacterLock=self.CameraLock
             for name,p in pairs(data.Profiles) do
                 self.Profiles[name]={Range=p.Range,Interval=p.Interval}
                 local target=config.Attack.GloveProfiles[name] or {}
@@ -108,7 +111,7 @@ function M.new(context)
         if not self.StorageAvailable then self.Message="Сохранение недоступно: нет файлового API"; return false end
         local good,raw=pcall(function()
             return http:JSONEncode({Schema=1,SearchChecks=self.SearchChecks,PathVisible=self.PathVisible,
-                LearningEnabled=self.LearningEnabled,Profiles=self.Profiles})
+                LearningEnabled=self.LearningEnabled,CameraLock=self.CameraLock,Profiles=self.Profiles})
         end)
         if not good or not decode(raw) then self.Message="Ошибка подготовки настроек"; return false end
         -- Preserve a previously validated copy before replacing the primary file.
@@ -131,6 +134,10 @@ function M.new(context)
     end
     function self:setLearning(value)
         self.LearningEnabled=value==true; self.Dirty=true; self:save()
+    end
+    function self:setCameraLock(value)
+        self.CameraLock=value==true; config.Camera.CharacterLock=self.CameraLock
+        self.Dirty=true; self:save()
     end
     function self:openStore(suffix,validate,limit)
         assert(suffix:match("^[%w%-]+$"),"Invalid store name")

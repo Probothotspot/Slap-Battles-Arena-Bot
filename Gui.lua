@@ -136,9 +136,11 @@ function Gui.mount(context)
     applyBudget.TextSize=12
     local performanceInfo=text(pages.Overview,"PerformanceInfo","",4,680,1,58,11,rgb(207,184,233))
     local settingsInfo=text(pages.Overview,"SettingsInfo","",4,744,1,42,10,rgb(178,161,196))
-    local learningToggle=button(pages.Overview,"LearningToggle","Локальное обучение: вкл",UDim2.fromOffset(4,800),UDim2.new(1,-10,0,32))
+    local cameraLock=button(pages.Overview,"CameraLockToggle","Поворот за камерой [CapsLock]: вкл",UDim2.fromOffset(4,800),UDim2.new(1,-10,0,32))
+    cameraLock.TextSize=12
+    local learningToggle=button(pages.Overview,"LearningToggle","Локальное обучение: вкл",UDim2.fromOffset(4,842),UDim2.new(1,-10,0,32))
     learningToggle.TextSize=12
-    local learningInfo=text(pages.Overview,"LearningInfo","",4,842,1,110,11,rgb(207,184,233))
+    local learningInfo=text(pages.Overview,"LearningInfo","",4,884,1,110,11,rgb(207,184,233))
     learningInfo.TextYAlignment=Enum.TextYAlignment.Top
     local statValues = {}
     local statLabels = {
@@ -163,7 +165,7 @@ function Gui.mount(context)
     local view = { Frame=frame, Body=body, Scale=scale, Collapse=collapse, Run=runLabel, PathButton=showPath, Notice=notice,
         Subtitle=subtitle, Status=status, Location=location, Action=action, Glove=glove,
         Tactic=tactic, StatValues=statValues, StatNote=statNote, CombatInfo=combatInfo, Credit=credit, RangeBox=rangeBox, IntervalBox=intervalBox, TuningNote=tuningNote, Pages=pages, Tabs=tabs,
-        BudgetBox=budgetBox,PerformanceInfo=performanceInfo,SettingsInfo=settingsInfo,LearningToggle=learningToggle,LearningInfo=learningInfo,
+        BudgetBox=budgetBox,PerformanceInfo=performanceInfo,SettingsInfo=settingsInfo,CameraLock=cameraLock,LearningToggle=learningToggle,LearningInfo=learningInfo,
         Selected="Overview", Collapsed=false, LogRevision=-1, LastRunning=nil, Placed=false }
     views[gui] = view
     local animated = {}
@@ -208,6 +210,7 @@ function Gui.mount(context)
         if not app:SetSearchChecks(tonumber(budgetBox.Text)) then settingsInfo.Text="Введи целое число от 10 до 2000." end
     end))
     cleanup:add(learningToggle.Activated:Connect(function() app:SetLearningEnabled(not app.Settings.LearningEnabled) end))
+    cleanup:add(cameraLock.Activated:Connect(function() app:SetCameraLock(not app.Settings.CameraLock) end))
     cleanup:add(close.Activated:Connect(function() app:Destroy() end))
     for name,control in pairs(tabs) do
         local selected=name
@@ -276,6 +279,7 @@ function Gui.update(gui,app)
             app.Config.Pursuit.GoalCandidates,app.Config.Pursuit.MaxExpanded)
         v.SettingsInfo.Text=settings.Message
         v.LearningToggle.Text="Локальное обучение: "..(settings.LearningEnabled and "вкл" or "выкл")
+        v.CameraLock.Text="Поворот за камерой [CapsLock]: "..(settings.CameraLock and "вкл" or "выкл")
     end
     local memory=app.MemoryView or {}
     v.LearningInfo.Text=string.format("Опыт: %d ситуаций · исходов: %d\nСмертей: %d · попаданий: %d · убийств: %d\nТактика: %s\n%s",

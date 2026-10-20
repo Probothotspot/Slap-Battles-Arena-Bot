@@ -93,6 +93,7 @@ function C.new(context)
         if self.FacingHumanoid and self.FacingHumanoid.Parent then self.FacingHumanoid.AutoRotate=self.WasAutoRotate end
         self.FacingHumanoid,self.WasAutoRotate=nil,nil
     end
+    function self:yieldFacing() self:_releaseFacing() end
     function self:_expire()
         local now=clock()
         for id,record in pairs(self.Pending) do
@@ -156,6 +157,10 @@ function C.new(context)
         local desired=flat(target-root.Position)
         if desired.Magnitude<.01 then return false end
         desired=desired.Unit
+        if self.TargetCamera and self.TargetCamera:ownsFacing(humanoid) then
+            local look=flat(root.CFrame.LookVector)
+            return look.Magnitude>.01 and look.Unit:Dot(desired)>=math.cos(o.FacingTolerance)
+        end
         if self.FacingHumanoid~=humanoid then
             self:_releaseFacing(); self.FacingHumanoid=humanoid; self.WasAutoRotate=humanoid.AutoRotate
         end
@@ -190,6 +195,7 @@ function C.new(context)
         local function idle(message)
             self:_deactivate(); self:_releaseFacing(); self.Phase,self.Message="waiting",message
         end
+        if self.TargetCamera and self.TargetCamera.Suspended then idle("Поворот освобождён на время кат-сцены"); return end
         if not o.Enabled or not pursuit.Running or not s.Alive or s.ArenaState~="arena" or not root or not h
             or h.Health<=0 or h.Sit or h.PlatformStand or (context.Player and context.Player.Character~=char)
             or not target or not tr or not th or th.Health<=0 or pursuit.TargetCharacter~=tc
