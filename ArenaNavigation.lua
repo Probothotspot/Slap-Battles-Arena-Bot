@@ -20,7 +20,7 @@ function A.new(context)
     local o,bounds,player,S=context.Options,context.Arena,context.Player,context.SurfaceRoutes
     local self={Generation=0,Running=false,Destroyed=false,Phase="waiting",Message="Ожидание арены",
         NextPlan=0,NextSelect=0,Plans=0,Failures=0,GraphNodes=0,Expanded=0,
-        LastSliceWork=0,PeakSliceWork=0,RouteSource="—",TargetName="—",Direction=Vector3.zero}
+        LastSliceWork=0,PeakSliceWork=0,RouteSource="—",TargetName="—",Direction=Vector3.zero,GraphCache={}}
     local bindName="ArenaBotPursuit"
     function self:_release()
         self.Direction=Vector3.zero; self.LocalTarget=nil
@@ -41,7 +41,7 @@ function A.new(context)
     function self:stop(message)
         self.Generation=self.Generation+1; self.Running=false
         self:_dropPending()
-        self.Job=nil; self.EngineCandidate=nil; self.ValidationJob=nil; self.Cache=nil
+        self.Job=nil; self.EngineCandidate=nil; self.ValidationJob=nil; self.Cache=nil; self.GraphCache={}
         self.Target=nil; self.TargetCharacter=nil; self.TargetName="—"
         self:_clearPath()
         if self.Bound then run:UnbindFromRenderStep(bindName); self.Bound=false end
@@ -62,6 +62,8 @@ function A.new(context)
         return {Phase=self.Phase,Message=self.Message,Target=self.TargetName,RouteSource=self.RouteSource,
             Plans=self.Plans,Failures=self.Failures,GraphNodes=self.GraphNodes,Expanded=self.Expanded,
             SliceWork=self.LastSliceWork,PeakSliceWork=self.PeakSliceWork,
+            PlanSeconds=self.LastPlanSeconds,PlanSlices=self.LastPlanSlices,GoalCandidates=self.GoalCandidates,
+            GraphCacheHit=self.GraphCacheHit,EdgeCacheHits=self.EdgeCacheHits,EdgeChecks=self.EdgeChecks,
             Waypoints=self.Route and #self.Route or 0,Waypoint=self.Index or 0,Planning=self.Job~=nil or self.EngineBusy}
     end
     function self:_params()
@@ -73,7 +75,8 @@ function A.new(context)
         return params,exclude
     end
     function self:_geometry(checkpoint,params,bodyParams)
-        return S.new({Workspace=world,Options=o,Params=params or self.Params,BodyParams=bodyParams,Checkpoint=checkpoint})
+        return S.new({Workspace=world,Options=o,Params=params or self.Params,BodyParams=bodyParams,Checkpoint=checkpoint,
+            GraphCache=self.GraphCache,Clock=clock})
     end
     function self:_checkpoint()
         if self.SliceOps>=o.WorkPerFrame or clock()-self.SliceStart>=o.BudgetSeconds then coroutine.yield() end
@@ -208,6 +211,8 @@ function A.new(context)
         self.RouteSource,self.LastProgress,self.BestDistance=source,clock(),math.huge
         self.CheckedAt=nil
         self.Job=nil -- The accepted route is settled; stop evaluating alternative graph routes.
+        self.LastPlanSeconds=self.PlanStarted and clock()-self.PlanStarted or 0
+        self.LastPlanSlices=self.PlanSlices or 0
         self.PlanStarted=nil; self.AttemptFinished=true
         self.Phase,self.Message="pursuit","Иду к "..self.TargetName.." · "..source
         if path then
@@ -219,7 +224,7 @@ function A.new(context)
     end
     function self:_invalidate(message)
         self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
-        self.Cache=nil; self.PlanTarget=nil; self.PlanStarted=nil; self.AttemptFinished=true
+        self.Cache=nil; self.GraphCache={}; self.PlanTarget=nil; self.PlanStarted=nil; self.AttemptFinished=true
         self:_clearPath(); self.NextPlan=clock()+o.MinReplanInterval
         self.Phase,self.Message="replan",message.." — ищу обход"
     end
@@ -234,19 +239,24 @@ function A.new(context)
         local dir=flat(self.Root.Position-ground.Position)
         dir=dir.Magnitude>.01 and dir.Unit or Vector3.new(1,0,0)
         local result={}
-        for _,angle in ipairs({0,math.pi/3,-math.pi/3,2*math.pi/3,-2*math.pi/3}) do
+        local count=math.max(5,math.min(48,o.GoalCandidates or 24))
+        for i=0,count-1 do
+            local angle=i*2*math.pi/count
             local c,s=math.cos(angle),math.sin(angle)
             local offset=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)*(self.CombatIntent and self.CombatIntent.DesiredDistance or o.DesiredDistance)
             local goal=geometry:project(ground.Position+offset,2,5)
             if goal and math.abs(goal.Position.Y-ground.Position.Y)<3 then table.insert(result,goal) end
         end
+        table.sort(result,function(a,b) return distance(self.Root.Position,a.Position)<distance(self.Root.Position,b.Position) end)
+        self.GoalCandidates=#result
         return result
     end
     function self:_request(now,targetRoot)
         if self.Job or self.ValidationJob or self.EngineCandidate or now<self.NextPlan then return end
         self.NextPlan=now+o.MinReplanInterval; self.Plans=self.Plans+1
         self.Generation=self.Generation+1; local generation=self.Generation
-        self.PlanTarget=targetRoot.Position; self.PlanStarted=now; self.RouteCost=nil; self.AttemptFinished=false
+        self.PlanTarget=targetRoot.Position; self.PlanStarted=now; self.PlanSlices=0; self.RouteCost=nil; self.AttemptFinished=false
+        self.GraphCacheHit=false; self.EdgeCacheHits=0; self.EdgeChecks=0
         self.RefreshAllowed=self.Route~=nil
         self.PlanStance=self.CombatIntent and self.CombatIntent.Stance
         local origin=self.Root.Position; local params,exclude=self:_params(); self.Params=params
@@ -255,8 +265,11 @@ function A.new(context)
             local geom=self:_geometry(checkpoint,params)
             local start=geom:project(origin,2,10); if not start then return end
             local goals=self:_goals(geom,targetRoot); if #goals==0 then return end
+            table.sort(goals,function(a,b) return (a.Position-start.Position).Magnitude<(b.Position-start.Position).Magnitude end)
             local best,bestCost
             for _,goal in ipairs(goals) do
+                local lower=(goal.Position-start.Position).Magnitude
+                if bestCost and lower>=bestCost then break end
                 local safe,proofs=geom:segment(start.Position,goal.Position)
                 if safe then
                     goal.Supports=proofs
@@ -296,7 +309,10 @@ function A.new(context)
                 self.Cache={Parts=parts,Origin=origin,Time=clock()}
             end
             local route,cost,info=geom:build(parts,start.Position,goals)
-            if info then self.GraphNodes,self.Expanded=info.Nodes,info.Expanded end
+            if info then
+                self.GraphNodes,self.Expanded=info.Nodes,info.Expanded
+                self.GraphCacheHit,self.EdgeCacheHits,self.EdgeChecks=info.CacheHit,info.EdgeCacheHits,info.EdgeChecks
+            end
             if route then self:_accept(route,cost,"поверхности A*",generation) end
         end)
         if not self.Route then self.Phase,self.Message="planning","Ищу безопасный путь к "..self.TargetName end
@@ -328,6 +344,7 @@ function A.new(context)
         end
         local job=self.ValidationJob or self.Job
         if job then
+            self.PlanSlices=(self.PlanSlices or 0)+1
             local ok,err=coroutine.resume(job)
             if not ok then
                 self.Failures=self.Failures+1; self.LastError=tostring(err)
@@ -414,6 +431,18 @@ function A.new(context)
         local _,root,h=playerRig(player,bounds)
         if root~=self.Root or not h or h.Sit or h.PlatformStand then self:_release(); return end
         if not self.Target or not self:_targetValid(self.Target) or self.Target.Character~=self.TargetCharacter then self:_release(); return end
+        -- Brake between perception ticks as soon as the live target enters the
+        -- desired band; do not follow a stale approach waypoint into their torso.
+        local tr=self.TargetCharacter:FindFirstChild("HumanoidRootPart")
+        local intent=self.CombatIntent
+        if intent and tr and math.abs(root.Position.Y-tr.Position.Y)<3 then
+            local gap=distance(root.Position,tr.Position)
+            if gap<=intent.HoldMax and not world:Raycast(root.Position,tr.Position-root.Position,self.Params) then
+                if gap>=intent.HoldMin or (self.Direction.Magnitude>0 and self.Direction:Dot(flat(tr.Position-root.Position))>0) then
+                    self:_release(); return
+                end
+            end
+        end
         if self.Route and self.GroundOffset then
             self:_advance(root.Position-Vector3.new(0,self.GroundOffset,0),now)
         end

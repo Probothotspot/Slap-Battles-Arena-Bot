@@ -163,7 +163,9 @@ function Main.start(loadModule, manifest, diagnostics)
             or type(interval)~="number" or interval~=interval or interval<.15 or interval>30 then return false end
         local tool=self.Snapshot and self.Snapshot.Tool
         local name=tool and tool.Name or "Default"
-        config.Attack.GloveProfiles[name]={Range=range,Interval=interval,Verified=false}
+        local profile=config.Attack.GloveProfiles[name] or {}
+        profile.Range,profile.Interval,profile.Verified=range,interval,false
+        config.Attack.GloveProfiles[name]=profile
         stats:log("Настройки боя: "..name..", дистанция "..range..", интервал "..interval.." с")
         refresh(); return true
     end

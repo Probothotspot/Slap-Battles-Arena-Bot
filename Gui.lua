@@ -252,7 +252,9 @@ function Gui.update(gui,app)
         (app.Plan and app.Plan.Reason) or "Ожидание персонажа")
     v.PathButton.Text="Показать путь: "..(app.PathVisible and "вкл" or "выкл")
     local nav=app.ArenaStatus or {}
-    v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—").."\nПоисков: "..(nav.Plans or 0).." · Узлов: "..(nav.GraphNodes or 0).."\nАктиваций инструмента: "..(combat.AttackAttempts or app.AttackAttempts or 0).." · ожидают ответа: "..(combat.PendingAttacks or 0)
+    v.Notice.Text="Цель: "..(nav.Target or "—").." · Путь: "..(nav.RouteSource or "—")..
+        string.format("\nРасчёт: %.0f мс · вариантов: %d · кэш: %s",(nav.PlanSeconds or 0)*1000,nav.GoalCandidates or 0,nav.GraphCacheHit and "да" or "нет")..
+        "\nАктиваций инструмента: "..(combat.AttackAttempts or app.AttackAttempts or 0).." · ожидают ответа: "..(combat.PendingAttacks or 0)
     local profile=combat.Profile
     v.CombatInfo.Text=(combat.Message or "Бой остановлен").."\n"..
         (profile and string.format("Дистанция %.1f · Интервал %.2f с · Таймер %.1f с",profile.Range,profile.Interval,combat.Cooldown or 0) or "Профиль появится после выбора перчатки").."\n"..

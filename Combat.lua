@@ -7,7 +7,80 @@ function C.new(context)
     local o=context.Options
     local adapter=context.Adapter
     local self={Attempts=0,ConfirmedHits=0,Unconfirmed=0,ActivationErrors=0,NextAt=0,Pending={},Seen={},SeenOrder={},
-        Phase="paused",Message="Бой остановлен",Sequence=0}
+        Phase="paused",Message="Бой остановлен",Sequence=0,ContactChecks=0,ContactAttacks=0}
+    function self:_hitParts(tool)
+        local now=clock()
+        if self.PartsTool==tool and now<(self.PartsUntil or 0) then return self.HitParts end
+        local chosen,fallback={},{}
+        if tool and tool.GetDescendants then
+            for _,part in ipairs(tool:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local named=false; local ancestor=part
+                    while ancestor and ancestor~=tool do
+                        local name=string.lower(ancestor.Name)
+                        if name:find("glove",1,true) or name:find("hand",1,true) or name:find("hitbox",1,true)
+                            or name:find("slap",1,true) then named=true; break end
+                        ancestor=ancestor.Parent
+                    end
+                    local list=named and chosen or fallback
+                    if #list<(o.MaxHitParts or 8) then list[#list+1]=part end
+                end
+            end
+        end
+        self.HitParts=#chosen>0 and chosen or fallback
+        self.PartsTool,self.PartsUntil=tool,now+(o.HitPartRefresh or .5)
+        self.ContactState=nil; self.ContactTool=nil
+        return self.HitParts
+    end
+    function self:_contact(tool,target,root)
+        local world=context.Workspace or game:GetService("Workspace")
+        local parts=self:_hitParts(tool)
+        if #parts==0 or not world.GetPartsInPart then return false,false end
+        -- Screen-space pixels can overlap through walls or at different depths.
+        -- Query real collision geometry, limited to the current target's body parts.
+        local now=clock()
+        if self.ContactTool==tool and self.ContactTarget==target and now<(self.ContactUntil or 0) then
+            return self.ContactState,self.ContactAvailable
+        end
+        local filter=OverlapParams.new(); filter.FilterType=Enum.RaycastFilterType.Include
+        filter.FilterDescendantsInstances={target}; filter.RespectCanCollide=false; filter.MaxParts=0
+        filter.CollisionGroup=root.CollisionGroup
+        local touching,available=false,false
+        for _,part in ipairs(parts) do
+            if part.Parent and part:IsDescendantOf(tool) and part.Size.Magnitude<80 then
+                self.ContactChecks=self.ContactChecks+1
+                local ok,hits=pcall(function() return world:GetPartsInPart(part,filter) end)
+                if ok then
+                    available=true
+                    for _,hit in ipairs(hits) do
+                        -- Accessories and the opponent's Tool do not constitute body contact.
+                        if hit:IsA("BasePart") and hit.Parent==target then touching=true; break end
+                    end
+                end
+            end
+            if touching then break end
+        end
+        self.ContactTool,self.ContactTarget,self.ContactUntil=tool,target,now+(o.ContactCheckInterval or 1/60)
+        self.ContactState,self.ContactAvailable=touching,available
+        return touching,available
+    end
+    function self:_measuredDistance(tool,root,targetRoot,profile)
+        if not profile.PreferContact or not root then return profile.Range*(profile.StandOff or .85) end
+        local reach=0
+        for _,part in ipairs(self:_hitParts(tool)) do
+            if part.Parent and part:IsDescendantOf(tool) then
+                -- Horizontal support of an oriented box along the facing direction.
+                local look=flat(root.CFrame.LookVector).Unit
+                local cf,size=part.CFrame,part.Size
+                local extent=(math.abs(cf.RightVector:Dot(look))*size.X+math.abs(cf.UpVector:Dot(look))*size.Y
+                    +math.abs(cf.LookVector:Dot(look))*size.Z)/2
+                reach=math.max(reach,flat(part.Position-root.Position):Dot(look)+extent)
+            end
+        end
+        local targetRadius=targetRoot and targetRoot.Size and math.min(targetRoot.Size.X,targetRoot.Size.Z)/2 or 1
+        if reach>1 then return math.max(1,math.min(profile.Range,reach+targetRadius-.3)) end
+        return profile.Range*(profile.StandOff or .85)
+    end
     function self:profile(tool)
         if adapter then return adapter:profile(tool,o) end
         return {Range=o.ConservativeRange,Interval=o.Interval,Verified=false,Source="Настройки профиля"}
@@ -28,6 +101,7 @@ function C.new(context)
     end
     function self:stop()
         self:_deactivate(); self:_releaseFacing(); self.Context=nil
+        self.PartsTool=nil; self.HitParts=nil; self.ContactState=nil; self.ContactTool=nil
         self.Phase,self.Message="paused","Бой остановлен"
         for id in pairs(self.Pending) do self.Pending[id]=nil; self.Unconfirmed=self.Unconfirmed+1 end
         -- Keep NextAt across Stop/Start so toggling cannot bypass the attack interval.
@@ -59,7 +133,9 @@ function C.new(context)
             local size=foot and foot.Size
             narrow=size and math.min(size.X,size.Z)<4 or false
         end
-        local desired=p.Range*.85
+        local tc=pursuit.Target and pursuit.Target.Character
+        local tr=tc and tc:FindFirstChild("HumanoidRootPart")
+        local desired=self:_measuredDistance(snapshot.Tool,pursuit.Root,tr,p)
         if recovery and not narrow then desired=p.Range+o.RecoveryPadding end
         return {DesiredDistance=desired,HoldMin=math.max(.8,desired-.55),HoldMax=math.min(desired+.45,recovery and desired+.45 or p.Range),
             Narrow=narrow,Stance=recovery and "recover" or "attack",Message=recovery and "Выдерживаю интервал и сохраняю дистанцию" or "Подхожу для удара"}
@@ -113,23 +189,30 @@ function C.new(context)
         if lobby(root.Position.Y) or lobby(tr.Position.Y) or tc:FindFirstChildOfClass("ForceField") then idle("Цель недоступна или защищена"); return end
         local profile=self:profile(s.Tool); self.CurrentProfile=profile
         local distance=(tr.Position-root.Position).Magnitude
-        if not finite(distance) or distance>profile.Range+o.FacePadding or math.abs(root.AssemblyLinearVelocity.Y)>12 then idle("Преследую цель"); return end
+        if not finite(distance) or distance>math.max(profile.Range+o.FacePadding,profile.PreferContact and 40 or 0)
+            or math.abs(root.AssemblyLinearVelocity.Y)>12 then idle("Преследую цель"); return end
         if context.Knowledge and not context.Knowledge.get(s.GloveName).CanSlap then idle("Нужен отдельный контроллер перчатки"); return end
         -- Re-read visibility, range and footing at execution time, not just the older perception tick.
         local world=context.Workspace or game:GetService("Workspace")
         if world:Raycast(root.Position,tr.Position-root.Position,pursuit.Params) then idle("Между нами препятствие"); return end
-        if not pursuit:_geometry():project(root.Position,1,8) then idle("Нет подтверждённой опоры"); return end
         local aligned=self:_face(root,h,tr.Position,dt or 0)
-        if not aligned then self.Phase,self.Message="facing","Поворачиваюсь к цели"; return end
         if not self:ready() or s.Tool.Enabled==false then
             self.Phase,self.Message="cooldown",s.Tool.Enabled==false and "Инструмент пока не готов" or "Выдерживаю интервал удара"; return
         end
-        if distance>profile.Range or pursuit.Phase~="position" then self.Phase,self.Message="approach","Подхожу на дистанцию удара"; return end
+        local contact,available=self:_contact(s.Tool,tc,root)
+        if not aligned and not contact then self.Phase,self.Message="facing","Поворачиваюсь к цели"; return end
+        if not contact and (distance>profile.Range or (profile.PreferContact and available)) then
+            self.Phase,self.Message="approach","Подвожу перчатку к цели"; return
+        end
+        if not pursuit:_geometry():project(root.Position,1,8) then idle("Нет подтверждённой опоры"); return end
         local obs=c.Observations or {}
         if obs.Target and (obs.Target.CounterActive or obs.Target.ReverseActive or obs.Target.Invulnerable) then idle("У цели активная защита"); return end
-        if c.Plan and c.Plan.Action~="slap" and c.Plan.Action~="space" then self.Phase,self.Message="waiting",c.Plan.Reason or "Ожидаю решения"; return end
+        if c.Plan and c.Plan.Action~="slap" and c.Plan.Action~="space" and c.Plan.Action~="approach" then
+            self.Phase,self.Message="waiting",c.Plan.Reason or "Ожидаю решения"; return
+        end
         self.Sequence=self.Sequence+1; local id=self.Sequence
         self.Attempts=self.Attempts+1; self.NextAt=clock()+profile.Interval
+        if contact then self.ContactAttacks=self.ContactAttacks+1 end
         self.Pending[id]={Time=clock(),TargetUserId=target.UserId,TargetName=target.Name,Character=char}
         -- Bound the queue even for a very fast configured profile.
         local ids={}; for key in pairs(self.Pending) do table.insert(ids,key) end; table.sort(ids)
@@ -147,6 +230,7 @@ function C.new(context)
         self.HadHitFeed=self.HadHitFeed or feed
         return {AttackAttempts=self.Attempts,ConfirmedHits=self.HadHitFeed and self.ConfirmedHits or nil,
             HitFeedAvailable=feed,UnconfirmedAttacks=self.Unconfirmed,ActivationErrors=self.ActivationErrors,PendingAttacks=pending,
+            ContactChecks=self.ContactChecks,ContactAttacks=self.ContactAttacks,
             Phase=self.Phase,Message=self.Message,Cooldown=math.max(0,self.NextAt-clock()),Profile=self.CurrentProfile}
     end
     return self

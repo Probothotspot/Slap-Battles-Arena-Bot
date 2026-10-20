@@ -10,7 +10,8 @@ function A.new(context)
         if not positive(range,40) then range=4.5 end
         if not positive(interval,30) then interval=.8 end
         local verified=configured.Verified==true and positive(configured.Range,40) and positive(configured.Interval,30)
-        return {Range=range,Interval=interval,Verified=verified,
+        return {Range=range,Interval=interval,Verified=verified,PreferContact=configured.PreferContact==true,
+            StandOff=positive(configured.StandOff,1) and configured.StandOff or .85,
             Source=verified and "Проверенный профиль" or "Настройки: требуется проверка в игре"}
     end
     function self:unbindHitFeed()

@@ -74,6 +74,31 @@ function S.new(context)
         local delta=b-a; local horizontal=flat(delta).Magnitude
         if horizontal>o.MaxSegment then return false end
         if math.abs(delta.Y)>o.StepHeight+horizontal*o.MaxSlope then return false end
+        -- A solid rectangular Part has no holes. Prove an entire supported span with
+        -- two endpoint casts and one body sweep instead of resampling its interior.
+        -- Meshes, unions, terrain, seams and edges retain the sampled fallback.
+        local first=self:project(a,o.StepHeight+.25,2*o.StepHeight+.5)
+        local finish=self:project(b,o.StepHeight+.25,2*o.StepHeight+.5)
+        local part=first and first.Part
+        if part and finish and finish.Part==part and part:IsA("Part")
+            and part.Shape==Enum.PartType.Block and part.CFrame.UpVector.Y>=o.MinNormalY then
+            local function inside(node,expected)
+                local p=part.CFrame:PointToObjectSpace(node.Position)
+                return math.abs(node.Position.Y-expected.Y)<=o.StepHeight
+                    and math.abs(p.Y-part.Size.Y/2)<.05
+                    and math.abs(p.X)<=part.Size.X/2-o.FootRadius
+                    and math.abs(p.Z)<=part.Size.Z/2-o.FootRadius
+            end
+            if inside(first,a) and inside(finish,b) then
+                local lift=Vector3.new(0,o.BodyHeight/2+o.StepHeight,0)
+                step()
+                if not world:Blockcast(CFrame.new(first.Position+lift),Vector3.new(o.BodyRadius*2,o.BodyHeight,o.BodyRadius*2),
+                    finish.Position-first.Position,context.BodyParams or params) then
+                    return true,{{Part=part,Pose=part.CFrame,Size=part.Size}}
+                end
+                return false
+            end
+        end
         local count=math.max(1,math.ceil(horizontal/o.ProbeSpacing))
         local last
         local proofs,seen={},{}
@@ -128,13 +153,31 @@ function S.new(context)
             local k=key(p); buckets[k]=buckets[k] or {}; table.insert(buckets[k],id)
             return id
         end
-        local start=add(self:project(origin,3,10)); if not start then return nil end
-        local goalIds={}; for _,g in ipairs(goals) do local id=add(g); if id then table.insert(goalIds,id) end end
+        local shared=context.GraphCache
+        local cached=shared and shared.Graph
+        local reusable=cached and cached.Options==o and cached.Group==params.CollisionGroup
+            and #cached.Parts==#parts and (context.Clock or os.clock)()-cached.Time<(o.GraphCacheSeconds or 4)
+        if reusable then
+            local seen={}
+            for _,part in ipairs(parts) do seen[part]=true end
+            for _,stamp in ipairs(cached.Parts) do
+                step()
+                local part=stamp.Part
+                if not seen[part] or not part.Parent or part.CanCollide~=stamp.Collidable
+                    or part.CFrame~=stamp.Pose or part.Size~=stamp.Size or part.CollisionGroup~=stamp.Group
+                    or part.Material~=stamp.Material or part.CanQuery~=stamp.Queryable
+                    or (part:IsA("Part") and part.Shape~=stamp.Shape) then reusable=false; break end
+            end
+        end
+        if reusable then
+            for _,node in ipairs(cached.Nodes) do step(); add(node) end
+        else
         -- Narrow parts first; cap the entire graph and each broad surface separately.
-        table.sort(parts,function(a,b) return math.min(a.Size.X,a.Size.Z)<math.min(b.Size.X,b.Size.Z) end)
-        for _,part in ipairs(parts) do
+        local ordered={}; for _,part in ipairs(parts) do ordered[#ordered+1]=part end
+        table.sort(ordered,function(a,b) return math.min(a.Size.X,a.Size.Z)<math.min(b.Size.X,b.Size.Z) end)
+        for _,part in ipairs(ordered) do
             step()
-            if #nodes>=o.MaxNodes then break end
+            if #nodes>=o.MaxNodes-#goals-1 then break end
             if part.Parent and part.CanCollide and part.CFrame.UpVector.Y>=o.MinNormalY then
                 local sx,sz=math.max(0,part.Size.X/2-o.FootRadius),math.max(0,part.Size.Z/2-o.FootRadius)
                 local nx,nz=math.min(o.MaxAxisSamples,math.max(1,math.ceil(sx*2/o.GridSpacing))),
@@ -147,12 +190,27 @@ function S.new(context)
                     if flat(p-origin).Magnitude<=o.ScanRadius and math.abs(p.Y-origin.Y)<=o.ScanHeight then
                         local node=self:project(p,.8,1.6)
                         if node and node.Part==part and math.abs(node.Position.Y-p.Y)<.75 then
-                            node.Narrow=math.min(part.Size.X,part.Size.Z)<4; add(node)
+                            node.Narrow=math.min(part.Size.X,part.Size.Z)<4
+                            if #nodes<o.MaxNodes-#goals-1 then add(node) end
                         end
                     end
                 end end
             end
         end
+        end
+        local staticCount=#nodes
+        if shared and not reusable then
+            local stamps,base={},{}
+            for _,part in ipairs(parts) do
+                stamps[#stamps+1]={Part=part,Pose=part.CFrame,Size=part.Size,Collidable=part.CanCollide,Group=part.CollisionGroup,
+                    Material=part.Material,Queryable=part.CanQuery,Shape=part:IsA("Part") and part.Shape or nil}
+            end
+            for i,node in ipairs(nodes) do base[i]=node end
+            cached={Nodes=base,Parts=stamps,Options=o,Group=params.CollisionGroup,Time=(context.Clock or os.clock)(),Edges={},Proofs={}}
+            shared.Graph=cached
+        end
+        local start=add(self:project(origin,3,10)); if not start then return nil end
+        local goalIds={}; for _,g in ipairs(goals) do local id=add(g); if id then table.insert(goalIds,id) end end
         local function neighbors(id)
             local p=nodes[id].Position; local bx,by,bz=math.floor(p.X/radius),math.floor(p.Y/radius),math.floor(p.Z/radius)
             local found={}
@@ -170,21 +228,35 @@ function S.new(context)
             return result
         end
         local cache,proofCache={},{}
+        local edgeHits,edgeChecks=0,0
         local function edge(a,b)
             local k=a..":"..b
             if cache[k]==nil then
+                local persistent=cached and a<=staticCount and b<=staticCount
+                if persistent and cached.Edges[k]~=nil then
+                    cache[k],proofCache[k]=cached.Edges[k],cached.Proofs[k]; edgeHits=edgeHits+1
+                    return cache[k]
+                end
                 local na,nb=nodes[a],nodes[b]
                 local safe,proofs=self:segment(na.Position,nb.Position)
+                edgeChecks=edgeChecks+1
                 cache[k]=safe and dist(na.Position,nb.Position)*(nb.Narrow and 1.12 or 1)+math.max(0,nb.Position.Y-na.Position.Y)*.2 or false
                 proofCache[k]=proofs
+                if persistent then cached.Edges[k],cached.Proofs[k]=cache[k],proofs end
             end
             return cache[k]
         end
         local route,cost,expanded=S.search(nodes,start,goalIds,neighbors,edge,step,o.MaxExpanded)
         if route then
-            for i=2,#route do route[i].Supports=proofCache[route[i-1].Id..":"..route[i].Id] end
+            local copy={}
+            for i,node in ipairs(route) do
+                local n={}; for k,v in pairs(node) do n[k]=v end
+                if i>1 then n.Supports=proofCache[route[i-1].Id..":"..node.Id] end
+                copy[i]=n
+            end
+            route=copy
         end
-        return route,cost,{Nodes=#nodes,Expanded=expanded}
+        return route,cost,{Nodes=#nodes,Expanded=expanded,CacheHit=reusable==true,EdgeCacheHits=edgeHits,EdgeChecks=edgeChecks,Goals=#goalIds}
     end
     return self
 end
