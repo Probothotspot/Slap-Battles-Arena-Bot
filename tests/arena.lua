@@ -26,8 +26,8 @@ CFrame.lookAt=function(p,target,up)
     local look=(target-p).Unit; local normal=up or V.new(0,1,0)
     return frame(p,look:Cross(normal),normal,look*-1)
 end
-Enum={RaycastFilterType={Exclude="exclude"},Material={Water="water"},PathStatus={Success="success"},
-    RenderPriority={Input={Value=100}}}
+Enum={RaycastFilterType={Exclude="exclude",Include="include"},Material={Water="water"},PathStatus={Success="success"},
+    PartType={Block="block"},RenderPriority={Input={Value=100}}}
 RaycastParams={new=function() return {} end}; OverlapParams={new=function() return {} end}
 local S=dofile("SurfaceRoutes.lua"); local A=dofile("ArenaNavigation.lua"); local C=dofile("Combat.lua")
 local config=dofile("config.lua"); local checks=0
@@ -35,6 +35,11 @@ local function eq(a,b,why) checks=checks+1; assert(a==b,(why or "Mismatch")..": 
 local function part(pos,size,cf)
     return {Parent=true,CanCollide=true,Size=size,Position=pos,CFrame=cf or frame(pos),
         IsA=function(_,class) return class=="BasePart" end}
+end
+local function block(pos,size)
+    local p=part(pos,size); p.Shape=Enum.PartType.Block
+    p.IsA=function(_,class) return class=="BasePart" or class=="Part" end
+    return p
 end
 local function plank(a,b,width)
     local right=(b-a).Unit; local back=V.new(-right.Z,0,right.X).Unit
@@ -135,6 +140,36 @@ eq(geom:validate(route),false,"New wall invalidates old route")
 world.Wall=false; bridges[2].Parent=nil
 eq(geom:validate(route),false,"Removed plank invalidates old route")
 bridges[2].Parent=true
+-- A single solid block shortcut must retain the void/wall checks, with measured
+-- world-query reduction against the sampled implementation on the same span.
+local floor=block(V.new(0,-.5,0),V.new(100,1,100))
+local fastWorld=collisionWorld({floor}); local fastGeometry=geometry(fastWorld)
+eq(fastGeometry:segment(V.new(-15,0,0),V.new(15,0,0)),true)
+local fastQueries=fastWorld.Queries
+floor.IsA=function(_,class) return class=="BasePart" end
+fastWorld.Queries=0; eq(fastGeometry:segment(V.new(-15,0,0),V.new(15,0,0)),true)
+local sampledQueries=fastWorld.Queries
+eq(sampledQueries>=fastQueries*10,true,"Solid floor shortcut reduces collision queries by at least 10x on this fixture")
+floor.IsA=function(_,class) return class=="BasePart" or class=="Part" end
+fastWorld.Wall=true; eq(fastGeometry:segment(V.new(-15,0,0),V.new(15,0,0)),false,"Fast floor path still rejects walls")
+fastWorld.Wall=false; eq(fastGeometry:segment(V.new(49.9,0,0),V.new(55,0,0)),false,"Fast floor path cannot cross the edge")
+
+local shared={}
+local function cachedBuild()
+    local cg=S.new({Workspace=world,Options=config.Pursuit,Params={},GraphCache=shared,Clock=function() return 0 end})
+    return cg:build(parts,V.new(-10,0,0),{cg:project(V.new(32,4,0),1,3)})
+end
+local firstRoute,_,firstInfo=cachedBuild(); eq(firstRoute~=nil,true)
+local firstSupports=firstRoute[2].Supports
+local secondRoute,_,secondInfo=cachedBuild()
+eq(secondInfo.CacheHit,true,"Unchanged topology reuses projected graph nodes")
+eq(secondInfo.EdgeCacheHits>0,true,"Unchanged topology reuses checked static edges")
+eq(firstRoute[2]~=secondRoute[2],true,"New route does not mutate cached or active route nodes")
+eq(firstRoute[2].Supports,firstSupports,"New planning preserves active route evidence")
+local oldSize=bridges[2].Size; bridges[2].Size=V.new(1,1,.1)
+local _,_,changedInfo=cachedBuild()
+eq(changedInfo.CacheHit,false,"Resized geometry discards sampled nodes and cached edges")
+bridges[2].Size=oldSize
 local gapWorld=collisionWorld({left,right}); local g=geometry(gapWorld)
 local disconnected=g:build({left,right},V.new(-10,0,0),{g:project(V.new(32,4,0),1,3)})
 eq(disconnected,nil,"Unconnected islands produce no walking route")
@@ -396,6 +431,52 @@ for _=1,100 do r:step(); r:render(); if r.Nav.Route and r.Nav.Route~=recoveryRou
 r:render(); eq(r.Direction.X>0,true,"Resume pursuit after cooldown ends")
 r.Combat:Destroy(); r.Adapter:Destroy(); r.Nav:Destroy()
 
+-- Contact is a real body overlap, not screen overlap, tool overlap or an attack
+-- confirmation. A moving pursuit can activate without waiting for route completion.
+r=battle(); r.Nav.Phase="pursuit"; r:prepare()
+eq(r.Combat.Attempts,1,"In-range attacks are independent of navigation completion")
+r.Combat:Destroy(); r.Nav:Destroy()
+local function contactBattle()
+    local b=battle(); b.Tool.Name="Extended"; b.Snapshot.GloveName="Extended"
+    b.EnemyRoot.Position=V.new(10,3,0)
+    local glove=part(V.new(8,3,0),V.new(4,1,1)); glove.Name="Glove"; glove.Parent=b.Tool
+    glove.CFrame=CFrame.lookAt(glove.Position,glove.Position+V.new(1,0,0))
+    function glove:IsDescendantOf(t) return self.Parent==t end
+    function b.Tool:GetDescendants() return {glove} end
+    b.Glove=glove
+    local body={Parent=b.Enemy.Character,IsA=function(_,c) return c=="BasePart" end}
+    function b.World:GetPartsInPart(p,filter)
+        eq(p,glove); eq(filter.FilterDescendantsInstances[1],b.Enemy.Character,"Contact only queries current target")
+        return self.Overlap or {}
+    end
+    b.Body=body; b.Nav.Phase="pursuit"; b.Observations.Target.Distance=10
+    return b
+end
+r=contactBattle(); r.World.Overlap={r.Body}; r:prepare()
+eq(r.Combat.Attempts,1,"Extended activates on actual body contact at long range")
+eq(r.Combat.ContactAttacks,1); eq(r.Combat:snapshot().ConfirmedHits,nil,"Overlap never fabricates a confirmed hit")
+local reached=r.Combat.ContactChecks
+r.Combat:step(.01); eq(r.Combat.ContactChecks,reached,"Cooldown skips expensive contact queries")
+r.Combat:Destroy(); r.Nav:Destroy()
+r=contactBattle(); r.World.Overlap={}; r:prepare()
+eq(r.Combat.Attempts,0,"Extended waits for contact instead of spending a swing on empty range")
+local intent=r.Combat:getMovementIntent(r.Snapshot,r.Nav)
+eq(intent.DesiredDistance>7,true,"Extended keeps a long measured standoff")
+local accessory={Parent={},IsA=function() return true end}; r.World.Overlap={accessory}; r.Now=.02; r.Combat:step(.02)
+eq(r.Combat.Attempts,0,"Opponent accessories are not a body contact")
+r.World.Overlap={r.Body}; r.World.VisibilityWall=true; r.Now=.04; r.Combat:step(.02)
+eq(r.Combat.Attempts,0,"Physical overlap does not bypass an intervening wall")
+r.World.VisibilityWall=false; r.Now=.06; r.Combat:step(.02)
+eq(r.Combat.Attempts,1,"Enter contact while still following a route")
+r.Combat:Destroy(); r.Nav:Destroy()
+
+r=battle(); r.EnemyRoot.Position=V.new(20,3,0); r.Nav.Combat=r.Combat; r:update()
+for _=1,100 do r:step(); if r.Nav.Route then break end end
+r:render(); eq(r.Direction.X>0,true)
+r.EnemyRoot.Position=V.new(4,3,0); r.Now=.01; r:render()
+eq(r.Direction.Magnitude,0,"Brake at live attack distance before the next perception update")
+r.Combat:Destroy(); r.Nav:Destroy()
+
 r=battle(); r:prepare(); r.World.Parts=parts; r.Root.Position=V.new(10,4.75,16)
 r.Nav.Route=nil -- Holding attack position has already released the walking route.
 local bridgeIntent=r.Combat:getMovementIntent(r.Snapshot,r.Nav)
@@ -483,4 +564,5 @@ Instance,Color3=saved.Instance,saved.Color3
 
 Vector3,CFrame,Enum,RaycastParams,OverlapParams=saved.Vector3,saved.CFrame,saved.Enum,saved.RaycastParams,saved.OverlapParams
 print("PASS: "..checks.." surface graph, pursuit and activation checks; bridge graph "..info.Nodes.." nodes / "..slices.." slices")
+print(string.format("Solid-floor collision queries: sampled=%d fast=%d (%.1fx); cached graph edges reused=%d",sampledQueries,fastQueries,sampledQueries/fastQueries,secondInfo.EdgeCacheHits))
 return checks
