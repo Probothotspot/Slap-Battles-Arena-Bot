@@ -19,6 +19,10 @@ local function frame(position,right,up,back)
     cf.LookVector=cf.BackVector*-1
     function cf:PointToWorldSpace(p) return self.Position+self.RightVector*p.X+self.UpVector*p.Y+self.BackVector*p.Z end
     function cf:PointToObjectSpace(p) local d=p-self.Position; return V.new(d:Dot(self.RightVector),d:Dot(self.UpVector),d:Dot(self.BackVector)) end
+    function cf:Lerp(other,a)
+        local look=(self.LookVector*(1-a)+other.LookVector*a).Unit
+        return frame(self.Position,look:Cross(V.new(0,1,0)),V.new(0,1,0),look*-1)
+    end
     return cf
 end
 CFrame={new=function(p) return frame(p) end}
@@ -27,7 +31,8 @@ CFrame.lookAt=function(p,target,up)
     return frame(p,look:Cross(normal),normal,look*-1)
 end
 Enum={RaycastFilterType={Exclude="exclude",Include="include"},Material={Water="water"},PathStatus={Success="success"},
-    PartType={Block="block"},RenderPriority={Input={Value=100}}}
+    PartType={Block="block"},KeyCode={E="E"},CameraType={Custom="Custom",Scriptable="Scriptable"},
+    RenderPriority={Input={Value=100},Camera={Value=200}}}
 RaycastParams={new=function() return {} end}; OverlapParams={new=function() return {} end}
 local S=dofile("SurfaceRoutes.lua"); local A=dofile("ArenaNavigation.lua"); local C=dofile("Combat.lua")
 local config=dofile("config.lua"); local checks=0
@@ -107,6 +112,11 @@ local short=S.search(nodes,1,{4},function(i) return adjacency[i] end,function() 
 eq(short,nil,"Disconnected graph never invents an edge")
 local _,_,expanded=S.search(nodes,1,{4},function(i) return adjacency[i] end,function() return 1 end,function() end,1)
 eq(expanded,1,"Expansion limit")
+nodes[4].GoalPenalty=10
+local preferred,preferredCost=S.search(nodes,1,{4,5},function(i) return adjacency[i] end,
+    function(a,b) return (nodes[a].Position-nodes[b].Position).Magnitude end,function() end,30)
+eq(preferred[#preferred],nodes[5],"Terminal flank preference is included in multi-goal search")
+eq(preferredCost,5); nodes[4].GoalPenalty=nil
 
 local left=part(V.new(-10,-.5,0),V.new(20,1,20))
 local right=part(V.new(32,3.5,0),V.new(20,1,20))
@@ -531,6 +541,7 @@ Instance={new=function(class)
     table.insert(objects,object); return object
 end}
 Color3={fromRGB=function(...) return {...} end}; Enum.Material.Neon="neon"
+local properLookAt=CFrame.lookAt
 CFrame.lookAt=function(p,_,up) return frame(p,nil,up) end
 local heartbeat={}
 function heartbeat:Connect(cb)
@@ -560,6 +571,89 @@ preview:update({V.new(-10,0,0),V.new(10,0,0)})
 eq(preview.Pool[1].Visible,false,"Do not display supported-looking steps over a missing floor")
 preview:Destroy(); eq(heartbeat.Connection.Connected,false,"Preview animation disconnects on close")
 eq(preview.Folder.Destroyed,true)
+CFrame.lookAt=properLookAt
+
+-- Flanking keeps a circular standoff and never requests a blind rearward step on a board.
+r=battle(); r.EnemyRoot.CFrame=CFrame.lookAt(r.EnemyRoot.Position,r.Root.Position)
+r.Nav.Combat=r.Combat; r:update()
+eq(r.Nav.CombatIntent.Flanking,true,"Facing enemy triggers an approach behind them")
+for _=1,100 do r:step(); if r.Nav.Route then break end end
+eq(r.Nav.Route~=nil,true,"Find a supported flank arc")
+local endpoint=r.Nav.Route[#r.Nav.Route].Position
+eq(math.abs(endpoint.Z)>.5,true,"Move around the target rather than straight into them")
+r:render(); eq(math.abs(r.Direction.Z)>.1,true,"Flanking is not stopped by the radial hold band")
+r.Now=1; r.Root.Position=V.new(7.8,3,0); r:update()
+eq(r.Nav.CombatIntent.Flanking,false,"Stop flanking once behind the target")
+r.Combat:Destroy(); r.Nav:Destroy()
+
+-- Camera rotates after the default controller, preserves position and leaves cutscenes alone.
+local Camera=dofile("TargetCamera.lua")
+r=rig(); r:update()
+local binds={}; local camera={CFrame=CFrame.lookAt(V.new(0,8,10),V.new(0,8,0)),CameraType="Custom"}
+local follow=Camera.new({Player=r.Player,Options=config.Camera,Workspace={CurrentCamera=camera},RunService={
+    BindToRenderStep=function(_,name,priority,callback) binds[name]=callback; eq(priority,201) end,
+    UnbindFromRenderStep=function(_,name) binds[name]=nil end}})
+follow:update(r.Snapshot,r.Nav); eq(binds.ArenaBotTargetCamera~=nil,true)
+local cameraPosition=camera.CFrame.Position; local oldLook=camera.CFrame.LookVector
+binds.ArenaBotTargetCamera(1/60)
+eq(camera.CFrame.Position,cameraPosition,"Camera tracking preserves zoom/collision position")
+eq(camera.CFrame.LookVector.X>oldLook.X,true,"Camera turns toward the live target")
+camera.CameraType="Scriptable"; local cutscene=camera.CFrame; follow:step(.1)
+eq(camera.CFrame,cutscene,"Cutscene orientation remains untouched")
+camera.CameraType="Custom"; r.EnemyHumanoid.Health=0; follow:step(.1)
+eq(next(binds),nil,"Target death releases render binding immediately")
+follow:Destroy(); r.Nav:Destroy()
+
+local Ability=dofile("Abilities.lua")
+local function abilityBattle(attributes)
+    local b=battle(); b.Attributes=attributes or {}; b.Events={}
+    function b.Tool:GetAttribute(key) return b.Attributes[key] end
+    function b.Player:FindFirstChildOfClass() return nil end
+    b.Ability=Ability.new({Player=b.Player,Options=config.Abilities,Arena=config.Arena,Workspace=b.World,
+        Clock=function() return b.Now end,Knowledge=dofile("GloveKnowledge.lua"),Input={
+        SendKeyEvent=function(_,down,key) b.Events[#b.Events+1]={Down=down,Key=key} end}})
+    function b:abilityStep() self.Ability:update(self.Snapshot,self.Nav,self.Observations); self.Ability:step() end
+    return b
+end
+r=abilityBattle(); r:abilityStep(); eq(r.Ability.Attempts,0,"Do not infer an active ability from the glove name alone")
+r.Ability:Destroy(); r.Nav:Destroy()
+r=abilityBattle({HasAbility=true,AbilityReady=false}); r:abilityStep()
+eq(r.Ability.Attempts,0,"Respect the advertised ability readiness")
+r.Attributes.AbilityReady=true; r:abilityStep()
+eq(r.Ability.Attempts,1); eq(r.Events[1].Down,true); eq(r.Events[1].Key,"E")
+r.Now=.06; r.Ability:step(); eq(r.Events[2].Down,false,"Release E without yielding the Heartbeat")
+r.Ability:stop(); r:abilityStep(); eq(r.Ability.Attempts,1,"Stop/Start preserves the per-glove cooldown")
+r.Now=4; r.World.VisibilityWall=true; r:abilityStep(); eq(r.Ability.Attempts,1,"No ability input through a wall")
+r.World.VisibilityWall=false; r:abilityStep(); eq(r.Ability.Attempts,2)
+r.Ability:Destroy(); eq(r.Events[#r.Events].Down,false,"Destroy always releases a held key")
+r.Nav:Destroy()
+r=abilityBattle({HasAbility=true}); r.Tool.Name="Flash"; r.Snapshot.GloveName="Flash"; r:abilityStep()
+eq(r.Ability.Attempts,0,"Reposition ability requires a checked landing")
+r.Ability:Destroy(); r.Nav:Destroy()
+r=abilityBattle({HasAbility=false}); local called=0
+r.Ability:bind("Default",{Role="utility",Cooldown=5,Ready=function() return true end,
+    Activate=function() called=called+1 end})
+r:abilityStep(); eq(called,1,"Explicit adapter executes its own verified activation")
+r.Ability:Destroy(); r.Nav:Destroy()
+r=abilityBattle(); local panel={Name="PlayerGui",IsA=function() return false end}
+local button={Name="AbilityButton",Text="5с",Parent=panel,Visible=true,Active=true,
+    AbsolutePosition={X=100,Y=200},AbsoluteSize={X=50,Y=40},
+    IsA=function(_,class) return class=="GuiObject" or class=="GuiButton" or class=="TextButton" end}
+function panel:GetDescendants() return {button} end
+function r.Player:FindFirstChildOfClass() return panel end
+r.Ability.Input={SendMouseButtonEvent=function(_,x,y,_,down) r.Events[#r.Events+1]={Down=down,X=x,Y=y} end}
+r:abilityStep(); eq(r.Ability.Attempts,0,"Recognize an advertised UI cooldown before pressing")
+button.Text="E"; r:abilityStep(); eq(r.Ability.Attempts,1,"Visible ability UI enables button input")
+eq(r.Events[1].X,125); eq(r.Events[1].Y,220)
+r.Ability:Destroy(); eq(r.Events[#r.Events].Down,false,"Cleanup releases a held ability button")
+r.Nav:Destroy()
+r=abilityBattle({HasAbility=true})
+r.Ability.Input={SendKeyEvent=function() error("input permission denied") end}
+local ok=pcall(function() r:abilityStep() end)
+eq(ok,true,"Input denial never escapes into the application's Heartbeat")
+eq(r.Ability.Unsupported,true); eq(r.Ability.Errors>0,true)
+r.Now=10; r:abilityStep(); eq(r.Ability.Attempts,1,"Do not retry unsupported input forever")
+r.Ability:Destroy(); r.Nav:Destroy()
 Instance,Color3=saved.Instance,saved.Color3
 
 Vector3,CFrame,Enum,RaycastParams,OverlapParams=saved.Vector3,saved.CFrame,saved.Enum,saved.RaycastParams,saved.OverlapParams
