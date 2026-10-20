@@ -1,6 +1,6 @@
 return {
     schemaVersion = 1,
-    version = "0.7.0",
+    version = "0.8.0",
     entry = "main.lua",
     systems = {
         { name = "SessionStats", path = "SessionStats.lua" },
@@ -12,6 +12,8 @@ return {
         { name = "ArenaNavigation", path = "ArenaNavigation.lua" },
         { name = "PathPreview", path = "PathPreview.lua" },
         { name = "Combat", path = "Combat.lua" },
+        { name = "TargetCamera", path = "TargetCamera.lua" },
+        { name = "Abilities", path = "Abilities.lua" },
         { name = "Recovery", path = "Recovery.lua" },
         { name = "Memory", path = "Memory.lua" },
     },

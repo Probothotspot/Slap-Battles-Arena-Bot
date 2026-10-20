@@ -258,7 +258,8 @@ function Gui.update(gui,app)
     local profile=combat.Profile
     v.CombatInfo.Text=(combat.Message or "Бой остановлен").."\n"..
         (profile and string.format("Дистанция %.1f · Интервал %.2f с · Таймер %.1f с",profile.Range,profile.Interval,combat.Cooldown or 0) or "Профиль появится после выбора перчатки").."\n"..
-        (combat.HitFeedAvailable and "Подтверждения попаданий подключены" or "Попадания: источник подтверждений не подключён")
+        ((app.AbilityView and app.AbilityView.Message) or "Способность: ожидание").." · "..
+        (app.TargetCamera and app.TargetCamera.Active and "Камера следит" or "Камера свободна")
     if s.GloveName~=v.TuningGlove then
         v.TuningGlove=s.GloveName
         local configured=app.Config.Attack.GloveProfiles[s.GloveName or "Default"] or {}

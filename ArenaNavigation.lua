@@ -239,13 +239,30 @@ function A.new(context)
         local dir=flat(self.Root.Position-ground.Position)
         dir=dir.Magnitude>.01 and dir.Unit or Vector3.new(1,0,0)
         local result={}
+        local intent=self.CombatIntent
+        local preferred
+        if intent and intent.Flanking and intent.Behind then
+            local behind=intent.Behind.Unit
+            local atan=math.atan2 or math.atan
+            local angle=(atan(behind.Z,behind.X)-atan(dir.Z,dir.X)+math.pi)%(2*math.pi)-math.pi
+            if math.abs(math.abs(angle)-math.pi)<.05 then
+                self.FlankSide=self.FlankSide or ((player.UserId or 0)%2==0 and 1 or -1)
+                angle=math.abs(angle)*self.FlankSide
+            end
+            local turn=math.min(math.abs(angle),o.FlankStep or math.rad(45))*(angle<0 and -1 or 1)
+            local c,s=math.cos(turn),math.sin(turn)
+            preferred=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)
+        end
         local count=math.max(5,math.min(48,o.GoalCandidates or 24))
         for i=0,count-1 do
             local angle=i*2*math.pi/count
             local c,s=math.cos(angle),math.sin(angle)
             local offset=Vector3.new(dir.X*c-dir.Z*s,0,dir.X*s+dir.Z*c)*(self.CombatIntent and self.CombatIntent.DesiredDistance or o.DesiredDistance)
             local goal=geometry:project(ground.Position+offset,2,5)
-            if goal and math.abs(goal.Position.Y-ground.Position.Y)<3 then table.insert(result,goal) end
+            if goal and math.abs(goal.Position.Y-ground.Position.Y)<3 then
+                goal.GoalPenalty=preferred and (1-offset.Unit:Dot(preferred))*(intent.DesiredDistance or o.DesiredDistance)*(o.FlankWeight or 4) or 0
+                table.insert(result,goal)
+            end
         end
         table.sort(result,function(a,b) return distance(self.Root.Position,a.Position)<distance(self.Root.Position,b.Position) end)
         self.GoalCandidates=#result
@@ -259,21 +276,24 @@ function A.new(context)
         self.GraphCacheHit=false; self.EdgeCacheHits=0; self.EdgeChecks=0
         self.RefreshAllowed=self.Route~=nil
         self.PlanStance=self.CombatIntent and self.CombatIntent.Stance
+        self.PlanFacing=targetRoot.CFrame and flat(targetRoot.CFrame.LookVector)
+        self.PlanFlanking=self.CombatIntent and self.CombatIntent.Flanking
         local origin=self.Root.Position; local params,exclude=self:_params(); self.Params=params
         local function checkpoint() self:_checkpoint() end
         self.Job=coroutine.create(function()
             local geom=self:_geometry(checkpoint,params)
             local start=geom:project(origin,2,10); if not start then return end
             local goals=self:_goals(geom,targetRoot); if #goals==0 then return end
-            table.sort(goals,function(a,b) return (a.Position-start.Position).Magnitude<(b.Position-start.Position).Magnitude end)
+            local function score(g) return (g.Position-start.Position).Magnitude+(g.GoalPenalty or 0) end
+            table.sort(goals,function(a,b) return score(a)<score(b) end)
             local best,bestCost
             for _,goal in ipairs(goals) do
-                local lower=(goal.Position-start.Position).Magnitude
+                local lower=score(goal)
                 if bestCost and lower>=bestCost then break end
                 local safe,proofs=geom:segment(start.Position,goal.Position)
                 if safe then
                     goal.Supports=proofs
-                    local cost=(goal.Position-start.Position).Magnitude
+                    local cost=lower
                     if not bestCost or cost<bestCost then best,bestCost={start,goal},cost end
                 end
             end
@@ -438,7 +458,7 @@ function A.new(context)
         if intent and tr and math.abs(root.Position.Y-tr.Position.Y)<3 then
             local gap=distance(root.Position,tr.Position)
             if gap<=intent.HoldMax and not world:Raycast(root.Position,tr.Position-root.Position,self.Params) then
-                if gap>=intent.HoldMin or (self.Direction.Magnitude>0 and self.Direction:Dot(flat(tr.Position-root.Position))>0) then
+                if (gap>=intent.HoldMin and not intent.Flanking) or (gap<intent.HoldMin and self.Direction.Magnitude>0 and self.Direction:Dot(flat(tr.Position-root.Position))>0) then
                     self:_release(); return
                 end
             end
@@ -487,13 +507,16 @@ function A.new(context)
         local intent=self.CombatIntent
         local holdMin,holdMax=intent and intent.HoldMin or o.HoldMin,intent and intent.HoldMax or o.HoldMax
         local d=distance(root.Position,targetRoot.Position)
-        if d>=holdMin and d<=holdMax and math.abs(root.Position.Y-targetRoot.Position.Y)<3
+        if not (intent and intent.Flanking) and d>=holdMin and d<=holdMax and math.abs(root.Position.Y-targetRoot.Position.Y)<3
             and not world:Raycast(root.Position,targetRoot.Position-root.Position,self.Params) then
             self.Generation=self.Generation+1; self:_dropPending(); self.Job=nil; self.ValidationJob=nil; self.EngineCandidate=nil
             self.AttemptFinished=true; self:_clearPath(); self.Message=intent and intent.Message or "Держу дистанцию от "..self.TargetName; self.Phase="position"
         else
             local moved=not self.PlanTarget or distance(self.PlanTarget,targetRoot.Position)>o.TargetReplanDistance
                 or (intent and self.PlanStance~=intent.Stance)
+                or (intent and self.PlanFlanking~=intent.Flanking)
+                or (intent and intent.Flanking and self.PlanFacing and targetRoot.CFrame
+                    and flat(targetRoot.CFrame.LookVector):Dot(self.PlanFacing)<math.cos(o.FlankRefreshAngle or .6))
             if not self.Route or (moved and self:_canRefresh()) then self:_request(now,targetRoot) end
         end
     end

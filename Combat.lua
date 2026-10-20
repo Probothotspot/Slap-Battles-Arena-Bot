@@ -128,7 +128,7 @@ function C.new(context)
         local p=self:profile(snapshot.Tool)
         local recovery=not self:ready()
         local narrow=pursuit._narrowCorridor and pursuit:_narrowCorridor()
-        if recovery and not narrow and pursuit.Root and pursuit._geometry then
+        if not narrow and pursuit.Root and pursuit._geometry then
             local foot=pursuit:_geometry():project(pursuit.Root.Position,1,8)
             local size=foot and foot.Size
             narrow=size and math.min(size.X,size.Z)<4 or false
@@ -137,8 +137,16 @@ function C.new(context)
         local tr=tc and tc:FindFirstChild("HumanoidRootPart")
         local desired=self:_measuredDistance(snapshot.Tool,pursuit.Root,tr,p)
         if recovery and not narrow then desired=p.Range+o.RecoveryPadding end
+        local flanking=false
+        local behind=tr and tr.CFrame and flat(tr.CFrame.LookVector)*-1
+        if o.FlankEnabled and not recovery and not narrow and behind and behind.Magnitude>.01 and pursuit.Root then
+            local offset=flat(pursuit.Root.Position-tr.Position)
+            flanking=offset.Magnitude>.01 and offset.Magnitude<=desired+(o.FlankEngagePadding or 7)
+                and offset.Unit:Dot(behind.Unit)<math.cos(o.BehindAngle or math.rad(60))
+        end
         return {DesiredDistance=desired,HoldMin=math.max(.8,desired-.55),HoldMax=math.min(desired+.45,recovery and desired+.45 or p.Range),
-            Narrow=narrow,Stance=recovery and "recover" or "attack",Message=recovery and "Выдерживаю интервал и сохраняю дистанцию" or "Подхожу для удара"}
+            Narrow=narrow,Flanking=flanking,Behind=behind,Stance=recovery and "recover" or "attack",
+            Message=recovery and "Выдерживаю интервал и сохраняю дистанцию" or (flanking and "Захожу за спину" or "Подхожу для удара")}
     end
     function self:_face(root,humanoid,target,dt)
         local desired=flat(target-root.Position)

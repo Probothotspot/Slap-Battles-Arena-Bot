@@ -26,11 +26,15 @@ function Main.start(loadModule, manifest, diagnostics)
     local combat = systems.Combat.new({Options=config.Attack,Adapter=adapter,Player=player,Arena=config.Arena,
         Knowledge=systems.GloveKnowledge,Log=function(message) stats:log(message) end})
     pursuit.Combat=combat
+    local camera=systems.TargetCamera.new({Player=player,Options=config.Camera})
+    local abilities=systems.Abilities.new({Player=player,Options=config.Abilities,Arena=config.Arena,
+        Knowledge=systems.GloveKnowledge,UserInput=game:GetService("UserInputService"),Log=function(message) stats:log(message) end})
     local app = { Version = manifest.version, Config = config, Systems = systems,
         Adapter = adapter, Status = "paused", Destroyed = false, Running = false,
-        Navigation = navigation, Pursuit=pursuit, Preview=preview, Combat=combat, PathVisible=false, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
+        Navigation = navigation, Pursuit=pursuit, Preview=preview, Combat=combat, TargetCamera=camera,Abilities=abilities,
+        PathVisible=false, AttackAttempts=0, Stats = stats, GloveKnowledge = systems.GloveKnowledge }
     app.CatalogStats = app.GloveKnowledge.stats()
-    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:Destroy(); adapter:Destroy() end)
+    cleanup:add(function() navigation:Destroy(); pursuit:Destroy(); preview:Destroy(); combat:Destroy(); camera:Destroy(); abilities:Destroy(); adapter:Destroy() end)
 
     local counter, counterConnection, lifeCharacter, lifeHumanoid, diedConnection, childConnection
     local function readSlaps()
@@ -95,6 +99,7 @@ function Main.start(loadModule, manifest, diagnostics)
         if app.Running then
             navigation:update(app.Snapshot)
             pursuit:update(app.Snapshot)
+            camera:update(app.Snapshot,pursuit)
             local target=pursuit.Target
             local targetCharacter=target and target.Character
             local targetRoot=targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
@@ -110,11 +115,13 @@ function Main.start(loadModule, manifest, diagnostics)
                     Ragdolled=pursuit.Humanoid.PlatformStand}
                 app.Plan=systems.Decision.plan(app.GloveKnowledge,app.Snapshot,observations)
                 combat:update(app.Snapshot,app.Plan,player.Character,pursuit,observations)
-            else combat:stop() end
+                abilities:update(app.Snapshot,pursuit,observations)
+            else combat:stop(); abilities:stop() end
             app.AttackAttempts=combat.Attempts
             stats:observe(app.Snapshot, navigation:getStatus())
         end
         app.CombatView=combat:snapshot()
+        app.AbilityView=abilities:snapshot()
         app.ArenaStatus=pursuit:getStatus()
         if app.Running and app.Snapshot.ArenaState=="arena" then
             local n=app.ArenaStatus
@@ -127,7 +134,7 @@ function Main.start(loadModule, manifest, diagnostics)
         if app.Gui then Gui.update(app.Gui, app) end
     end
     local function fail(err)
-        navigation:stop("Ошибка: движение остановлено"); pursuit:stop(); combat:stop(); preview:update({})
+        navigation:stop("Ошибка: движение остановлено"); pursuit:stop(); combat:stop(); camera:stop(); abilities:stop(); preview:update({})
         stats:setRunning(false)
         app.Running, app.Status, app.LastError = false, "error", tostring(err)
         app.StatsView = stats:snapshot()
@@ -148,7 +155,7 @@ function Main.start(loadModule, manifest, diagnostics)
     function app:Stop()
         if self.Destroyed then return end
         if self.Running then pcall(sample) end
-        navigation:stop("Бот остановлен"); pursuit:stop(); combat:stop(); preview:update({})
+        navigation:stop("Бот остановлен"); pursuit:stop(); combat:stop(); camera:stop(); abilities:stop(); preview:update({})
         stats:setRunning(false)
         self.Running = false
         if self.Status ~= "error" then self.Status = "paused" end
@@ -175,6 +182,12 @@ function Main.start(loadModule, manifest, diagnostics)
         self.CombatView=combat:snapshot()
         stats:log("Подключён адаптер подтверждений попаданий")
         if self.Gui then Gui.update(self.Gui,self) end
+        return true
+    end
+    function app:BindAbility(gloveName,spec)
+        if self.Destroyed then return false end
+        abilities:bind(gloveName,spec)
+        abilities.NextScan=0
         return true
     end
     function app:SetPathVisible(value)
@@ -212,6 +225,7 @@ function Main.start(loadModule, manifest, diagnostics)
             if app.Running then
                 local good,problem=pcall(function()
                     combat:step(dt)
+                    abilities:step()
                     pursuit:step()
                     previewElapsed=previewElapsed+dt
                     if app.PathVisible and previewElapsed>=config.PathPreview.Interval then

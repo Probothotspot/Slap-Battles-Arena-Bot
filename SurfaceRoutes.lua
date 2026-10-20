@@ -21,24 +21,25 @@ local function pop(heap)
 end
 -- Dijkstra/A* with admissible Euclidean heuristic, lazy validated edges, multiple goals.
 function S.search(nodes,start,goals,neighbors,edge,checkpoint,maxExpanded)
-    local goalSet={}; for _,id in ipairs(goals) do goalSet[id]=true end
+    local goalSet,penalties={},{}; for _,id in ipairs(goals) do goalSet[id]=true; penalties[id]=nodes[id].GoalPenalty or 0 end
     if #goals==0 then return nil end
     local function h(id)
         local n=math.huge
-        for _,g in ipairs(goals) do n=math.min(n,dist(nodes[id].Position,nodes[g].Position)) end
+        for _,g in ipairs(goals) do n=math.min(n,dist(nodes[id].Position,nodes[g].Position)+penalties[g]) end
         return n
     end
     local heap,gscore,parent,closed={}, {[start]=0}, {}, {}
     push(heap,{id=start,f=h(start),g=0})
     local expanded=0
+    local winner,winnerCost
     while #heap>0 and expanded<maxExpanded do
         checkpoint()
         local current=pop(heap); local id=current.id
+        if winnerCost and current.f>=winnerCost then break end
         if not closed[id] and current.g==gscore[id] then
             if goalSet[id] then
-                local ids={id}; while parent[id] do id=parent[id]; table.insert(ids,1,id) end
-                local route={}; for _,v in ipairs(ids) do table.insert(route,nodes[v]) end
-                return route,current.g,expanded
+                local total=current.g+penalties[id]
+                if not winnerCost or total<winnerCost then winner,winnerCost=id,total end
             end
             closed[id]=true; expanded=expanded+1
             for _,nextId in ipairs(neighbors(id)) do
@@ -55,6 +56,11 @@ function S.search(nodes,start,goals,neighbors,edge,checkpoint,maxExpanded)
                 end
             end
         end
+    end
+    if winner then
+        local ids={winner}; while parent[winner] do winner=parent[winner]; table.insert(ids,1,winner) end
+        local route={}; for _,id in ipairs(ids) do route[#route+1]=nodes[id] end
+        return route,winnerCost,expanded
     end
     return nil,nil,expanded
 end
@@ -210,7 +216,20 @@ function S.new(context)
             shared.Graph=cached
         end
         local start=add(self:project(origin,3,10)); if not start then return nil end
-        local goalIds={}; for _,g in ipairs(goals) do local id=add(g); if id then table.insert(goalIds,id) end end
+        local goalIds={}
+        local oldPenalties={}
+        for _,g in ipairs(goals) do
+            local id=add(g)
+            if id then
+                -- A goal may coincide with a cached graph node. Use a per-search
+                -- copy for its terminal penalty so old routes/cache stay immutable.
+                if oldPenalties[id]==nil then
+                    local copy={}; for k,v in pairs(nodes[id]) do copy[k]=v end
+                    nodes[id]=copy; oldPenalties[id]=true; copy.GoalPenalty=g.GoalPenalty or 0
+                    goalIds[#goalIds+1]=id
+                else nodes[id].GoalPenalty=math.min(nodes[id].GoalPenalty,g.GoalPenalty or 0) end
+            end
+        end
         local function neighbors(id)
             local p=nodes[id].Position; local bx,by,bz=math.floor(p.X/radius),math.floor(p.Y/radius),math.floor(p.Z/radius)
             local found={}
