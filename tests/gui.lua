@@ -1,7 +1,8 @@
 -- Execute the real GUI and Main against a small event-driven Roblox model.
 local saved={Instance=Instance,Enum=Enum,UDim2=UDim2,UDim=UDim,Color3=Color3,
     ColorSequence=ColorSequence,ColorSequenceKeypoint=ColorSequenceKeypoint,
-    TweenInfo=TweenInfo,game=game,typeof=typeof,warn=warn,session=_G.SlapBattlesArenaBot}
+    TweenInfo=TweenInfo,game=game,typeof=typeof,warn=warn,session=_G.SlapBattlesArenaBot,
+    readfile=readfile,writefile=writefile,isfile=isfile,identifyexecutor=identifyexecutor}
 local signals,tweens={},{}
 local viewport={X=1000,Y=850}
 local function signal()
@@ -145,6 +146,14 @@ eq(app.Running,false,"Start paused")
 eq(nav.Updates,0,"No movement before Start")
 eq(find("RunLabel").Text,"Старт бота")
 eq(find("Overview").Visible,true)
+eq(find("Title").Text,"ARENA BOT | Unknown","Unknown executor never prevents GUI appearance")
+find("SearchChecks").Text="100"; click("ApplySearchChecks")
+eq(app.Config.Pursuit.WorkPerFrame,100,"GUI budget controls the real planner")
+eq(app.Config.Pursuit.GoalCandidates,12)
+find("SearchChecks").Text="invalid"; click("ApplySearchChecks")
+eq(app.Config.Pursuit.WorkPerFrame,100,"Invalid GUI value leaves the working planner intact")
+click("LearningToggle"); eq(app.Settings.LearningEnabled,false)
+click("LearningToggle"); eq(app.Settings.LearningEnabled,true)
 eq(find("AuthorCredit").Text,"By: Probothotspot","Exact requested author label")
 eq(find("AuthorCredit"):FindFirstChildOfClass("UIGradient")~=nil,true,"White-gray animated credit has a gradient")
 eq(find("ConfirmedHits").Text,"—","Unavailable confirmations are not invented hits")
@@ -201,6 +210,41 @@ eq(nav.Destroyed,true,"X destroys navigation")
 eq(app.Running,false)
 eq(aliveConnections(),0,"All connections cleaned up")
 for _,tween in ipairs(tweens) do eq(tween.Cancelled,true,"All animation resources cancelled") end
+-- Real Main receives optional globals, restores preferences before mounting GUI,
+-- and reloads the previously recorded tactical table in a fresh module session.
+local disk,encoded,serial={},{},0
+local function copy(t)
+    if type(t)~="table" then return t end
+    local out={}; for k,v in pairs(t) do out[k]=copy(v) end; return out
+end
+services.HttpService={JSONEncode=function(_,data)
+    serial=serial+1; local raw="fixture-json:"..serial; encoded[raw]=copy(data); return raw
+end,JSONDecode=function(_,raw) return copy(assert(encoded[raw])) end}
+readfile=function(path) return assert(disk[path]) end
+writefile=function(path,raw) disk[path]=raw end
+isfile=function(path) return disk[path]~=nil end
+identifyexecutor=function() return "Delta" end
+input.TouchEnabled=true; input.KeyboardEnabled=false; humanoid.Health=100
+modules={}
+app=loadModule("main.lua").start(loadModule,dofile("manifest.lua"),{Silent=true,Destroy=function() end})
+eq(find("Title").Text,"ARENA BOT | Delta")
+app:SetSearchChecks(176); app:SetPathVisible(true); app:SetCombatTuning(5.8,1.1)
+app.Memory:policy({Alive=true,GloveName="Default"},{Character=character,Humanoid=humanoid,
+    Target={UserId=2,Character=character}},false)
+app.Memory:death(character)
+app:SetLearningEnabled(false); app:Destroy()
+modules={}
+app=loadModule("main.lua").start(loadModule,dofile("manifest.lua"),{Silent=true,Destroy=function() end})
+eq(app.Settings.SearchChecks,176,"Fresh Main restores saved budget")
+eq(find("SearchChecks").Text,"176","Loaded value appears immediately in GUI")
+eq(app.Config.Pursuit.WorkPerFrame,176)
+eq(app.PathVisible,true); eq(app.Settings.LearningEnabled,false)
+eq(app.Config.Attack.GloveProfiles.Default.Range,5.8)
+eq(app.Config.Attack.GloveProfiles.Default.Interval,1.1)
+eq(app.Memory.Data.Deaths,1,"Fresh Main restores experience")
+eq(app.Running,false,"Saved settings never force autostart")
+app:Destroy(); eq(aliveConnections(),0,"Reloaded sessions also clean up")
+readfile,writefile,isfile,identifyexecutor=saved.readfile,saved.writefile,saved.isfile,saved.identifyexecutor
 Instance,Enum,UDim2,UDim,Color3=saved.Instance,saved.Enum,saved.UDim2,saved.UDim,saved.Color3
 ColorSequence,ColorSequenceKeypoint,TweenInfo=saved.ColorSequence,saved.ColorSequenceKeypoint,saved.TweenInfo
 game,typeof,warn=saved.game,saved.typeof,saved.warn

@@ -171,6 +171,7 @@ eq(pcall(P.new, { LobbyMinY = 400, LobbyMaxY = 300 }), false, "Invalid bounds re
 local manifest = dofile("manifest.lua")
 checks = checks + dofile("tests/navigation.lua")
 checks = checks + dofile("tests/stats.lua")
+checks = checks + dofile("tests/settings.lua")
 checks = checks + dofile("tests/arena.lua")
 checks = checks + dofile("tests/gui.lua")
 for _, entry in ipairs(manifest.systems) do

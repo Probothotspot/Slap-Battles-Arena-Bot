@@ -220,6 +220,14 @@ local function rig()
 end
 local r=rig(); r:update()
 eq(r.Nav.Running,true)
+local oldWork=config.Pursuit.WorkPerFrame
+local checkpointCount=0
+local budgetJob=coroutine.create(function() for _=1,30 do r.Nav:_checkpoint(); checkpointCount=checkpointCount+1 end end)
+config.Pursuit.WorkPerFrame=10; r.Nav.SliceOps=0; r.Nav.SliceStart=r.Now
+eq(coroutine.resume(budgetJob),true); eq(checkpointCount,10,"Small live budget yields after ten control operations")
+config.Pursuit.WorkPerFrame=25; r.Nav.SliceOps=0; r.Nav.SliceStart=r.Now
+eq(coroutine.resume(budgetJob),true); eq(checkpointCount,30,"Increased budget is used by an existing coroutine")
+config.Pursuit.WorkPerFrame=oldWork
 for _=1,100 do r:step(); if r.Nav.Route then break end end
 eq(r.Nav.RouteSource,"прямой проверенный","Open ground uses cheapest validated direct route")
 eq(r.Requests,0,"Do not ComputeAsync on an open floor")
@@ -393,11 +401,11 @@ r.Nav:Destroy()
 
 -- Combat integration: turn without translation, throttle, recover on checked ground and correlated confirmations.
 local Adapter=dofile("SlapBattles.lua")
-local function battle()
+local function battle(memory)
     local b=rig(); b.EnemyRoot.Position=V.new(4,3,0); b:update()
     b.Adapter=Adapter.new({Player=b.Player})
     b.Combat=C.new({Options=config.Attack,Clock=function() return b.Now end,Workspace=b.World,
-        Player=b.Player,Arena=config.Arena,Adapter=b.Adapter,Knowledge=dofile("GloveKnowledge.lua")})
+        Player=b.Player,Arena=config.Arena,Adapter=b.Adapter,Memory=memory,Knowledge=dofile("GloveKnowledge.lua")})
     b.Observations={Target={Distance=4,LineOfSight=true,Invulnerable=false}}
     function b:prepare() self.Combat:update(self.Snapshot,{Action="slap"},self.Player.Character,self.Nav,self.Observations) end
     return b
@@ -587,6 +595,23 @@ eq(r.Nav.CombatIntent.Flanking,false,"Stop flanking once behind the target")
 r.Combat:Destroy(); r.Nav:Destroy()
 
 -- Camera rotates after the default controller, preserves position and leaves cutscenes alone.
+local learnedSide=-1
+local feedback={policy=function() return {Scale=.95,Side=learnedSide} end,attack=function(self,id) self.LastAttack=id end}
+r=battle(feedback); r.Nav.Combat=r.Combat
+r.EnemyRoot.CFrame=CFrame.lookAt(r.EnemyRoot.Position,r.Root.Position); r:update()
+eq(r.Nav.CombatIntent.FlankSide,-1,"Memory preference reaches the movement controller")
+eq(r.Nav.CombatIntent.DesiredDistance<config.Attack.ConservativeRange*.85,true,"Memory adjusts safe standoff")
+local function preferredZ()
+    local goals=r.Nav:_goals(geometry(r.World),r.EnemyRoot)
+    table.sort(goals,function(a,b) return a.GoalPenalty<b.GoalPenalty end)
+    return goals[1].Position.Z
+end
+eq(preferredZ()>0,true,"Learned left preference changes sampled flank goals")
+learnedSide=1; r:update()
+eq(preferredZ()<0,true,"Learned right preference changes sampled flank goals")
+r:prepare(); eq(feedback.LastAttack,1,"Successful tool activation registers its attack for learning")
+r.Combat:Destroy(); r.Nav:Destroy()
+
 local Camera=dofile("TargetCamera.lua")
 r=rig(); r:update()
 local binds={}; local camera={CFrame=CFrame.lookAt(V.new(0,8,10),V.new(0,8,0)),CameraType="Custom"}
